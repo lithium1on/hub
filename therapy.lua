@@ -6,7 +6,7 @@ local pid=game.PlaceId
 local jid=game.JobId
 
 if queue_on_teleport then
-    queue_on_teleport(game:HttpGet("https://github.com/lithium1on/hub/therapy.lua"))
+    queue_on_teleport('loadstring(game:HttpGet("https://github.com/lithium1on/hub/therapy.lua"))()')
 end
 
 local total=0
