@@ -56,6 +56,7 @@ if success and body and body.data then
 end
 
 if #servers>0 then
+    task.wait(1) -- aka pls wait cuz server can't save shit
     t:TeleportToPlaceInstance(pid,servers[math.random(1,#servers)],p)
 else
     s:SetCore("SendNotification",{
