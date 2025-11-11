@@ -75,7 +75,7 @@ task.spawn(function()
             task.wait(1.5)
             local sid = servers[math.random(1, #servers)]
             t:TeleportToPlaceInstance(pid, sid, p)
-            break
+            -- no more
         else
             s:SetCore("SendNotification", {
                 Title = "[lithium's hub]",
@@ -84,5 +84,6 @@ task.spawn(function()
             })
             task.wait(1)
         end
+        task.wait(5)
     end
 end)
