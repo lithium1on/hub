@@ -5,6 +5,7 @@ local h=game:GetService("HttpService")
 local pid=game.PlaceId
 local jid=game.JobId
 
+task.wait(2) -- i need to sorry
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 if queue_on_teleport then
