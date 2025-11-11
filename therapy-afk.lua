@@ -5,7 +5,7 @@ local h=game:GetService("HttpService")
 local pid=game.PlaceId
 local jid=game.JobId
 
-task.wait(1)
+if not game:IsLoaded() then game.Loaded:Wait() end
 
 if queue_on_teleport then
     queue_on_teleport('loadstring(game:HttpGet("https://raw.githubusercontent.com/lithium1on/hub/refs/heads/main/therapy-afk.lua"))()')
