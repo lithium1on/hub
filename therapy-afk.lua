@@ -54,15 +54,28 @@ end
 
 local function getservers()
     local success, body = pcall(function()
-        return h:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. pid .. "/servers/Public?sortOrder=Desc&limit=100&excludeFullGames=true"))
+        return game:HttpGet("https://games.roblox.com/v1/games/" .. pid .. "/servers/Public?sortOrder=Desc&limit=100&excludeFullGames=true")
     end)
+
+    if not success then
+        warn("debug: error during HTTP request - " .. tostring(body))
+        return {}
+    end
+
+    local success2, decoded = pcall(function()
+        return h:JSONDecode(body)
+    end)
+
+    if not success2 or not decoded or not decoded.data then
+        warn("debug: failed to decode server list - " .. tostring(decoded))
+        return {}
+    end
+
     local servers = {}
-    if success and body and body.data then
-        for _, v in ipairs(body.data) do
-            if type(v) == "table" and tonumber(v.playing) and tonumber(v.maxPlayers)
-                and v.playing < v.maxPlayers and v.id ~= jid then
-                table.insert(servers, v.id)
-            end
+    for _, v in ipairs(decoded.data) do
+        if type(v) == "table" and tonumber(v.playing) and tonumber(v.maxPlayers)
+            and v.playing < v.maxPlayers and v.id ~= jid then
+            table.insert(servers, v.id)
         end
     end
     return servers
@@ -75,7 +88,6 @@ task.spawn(function()
             task.wait(1.5)
             local sid = servers[math.random(1, #servers)]
             t:TeleportToPlaceInstance(pid, sid, p)
-            -- no more
         else
             s:SetCore("SendNotification", {
                 Title = "[lithium's hub]",
