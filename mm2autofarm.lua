@@ -1,5 +1,5 @@
 --[[
-	Requires a configuration, example below:
+  Requires a configuration, example below:
 
   getgenv().Settings = {
     Enabled = true,
