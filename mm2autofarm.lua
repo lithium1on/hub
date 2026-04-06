@@ -11,6 +11,12 @@
 if getgenv().Loaded then return end
 getgenv().Loaded = true
 
+game:GetService('StarterGui'):SetCore("SendNotification", {
+	Title = "[lithium's hub]",
+	Text = "thanks for using my script!",
+	Duration = 3
+})
+
 local AutoFarm = {}
 AutoFarm.__index = AutoFarm
 
