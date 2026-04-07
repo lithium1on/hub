@@ -5,6 +5,7 @@
     Enabled = true,
     ResetOnBagFull = true,
     Speed = 25,
+    AntiAFK = true
   }
 ]]
 
@@ -263,6 +264,22 @@ end
 
 local Player = game.Players.LocalPlayer
 local Farm = AutoFarm.New(Player)
+
+if getconnections and getgenv().Settings and getgenv().Settings.AntiAFK then
+    for _, connection in pairs(getconnections(Player.Idled)) do
+        if connection["Disable"] then
+            connection["Disable"](connection)
+        elseif connection["Disconnect"] then
+            connection["Disconnect"](connection)
+        end
+    end
+else
+    Player.Idled:Connect(function()
+        game:GetService("VirtualUser"):CaptureController()
+        game:GetService("VirtualUser"):ClickButton2(Vector2.new())
+    end)
+end
+
 Farm:HookDeath()
 Farm:DetectElite()
 Farm:DetectBagFull()
