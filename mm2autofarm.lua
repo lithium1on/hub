@@ -139,13 +139,27 @@ function AutoFarm.DetectBagFull(Self)
     end))
 end
 
+function AutoFarm.SeedCoins(Self)
+    Self.LiveCoins = {}
+    for _, Obj in pairs(workspace:GetChildren()) do
+        local Container = Obj:FindFirstChild("CoinContainer")
+        if Container then
+            for _, Coin in pairs(Container:GetChildren()) do
+                if Coin:GetAttribute("CoinID") == "Coin" and Coin:FindFirstChild("TouchInterest") then
+                    Self.LiveCoins[Coin] = true
+                end
+            end
+        end
+    end
+end
+
 function AutoFarm.DetectRounds(Self)
     AutoFarm.AddConnection(Self, Gameplay.RoundStart.OnClientEvent:Connect(function()
         Self.RoundActive = true
         Self.BagFull = false
         Self.Respawning = false
         Self.DiedThisRound = false
-        Self.LiveCoins = {}
+        AutoFarm.SeedCoins(Self)
     end))
     AutoFarm.AddConnection(Self, Gameplay.RoundEndFade.OnClientEvent:Connect(function()
         AutoFarm.CancelTween(Self)
@@ -156,18 +170,9 @@ function AutoFarm.DetectRounds(Self)
 end
 
 function AutoFarm.TrackCoins(Self)
+    AutoFarm.SeedCoins(Self)
     AutoFarm.AddConnection(Self, Gameplay.CoinsStarted.OnClientEvent:Connect(function()
-        Self.LiveCoins = {}
-        for _, Obj in pairs(workspace:GetChildren()) do
-            local Container = Obj:FindFirstChild("CoinContainer")
-            if Container then
-                for _, Coin in pairs(Container:GetChildren()) do
-                    if Coin:GetAttribute("CoinID") == "Coin" and Coin:FindFirstChild("TouchInterest") then
-                        Self.LiveCoins[Coin] = true
-                    end
-                end
-            end
-        end
+        AutoFarm.SeedCoins(Self)
     end))
     AutoFarm.AddConnection(Self, Gameplay.CoinCollected.OnClientEvent:Connect(function()
         for Coin in pairs(Self.LiveCoins) do
