@@ -5,7 +5,8 @@
     Enabled = true,
     ResetOnBagFull = true,
     Speed = 25,
-    AntiAFK = true
+    AntiAFK = true,
+    AutoRejoin = true
   }
 ]]
 
@@ -94,20 +95,20 @@ end
 
 function AutoFarm.DetectElite(Self)
     local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
-    AutoFarm.AddConnection(Self, Gameplay.CoinCollected.OnClientEvent:Connect(function(coinType, current, capacity)
-        if coinType == "Coin" and type(capacity) == "number" then
-            Self.BagCap = capacity
-            Self.IsElite = capacity > 40
+    AutoFarm.AddConnection(Self, Gameplay.CoinCollected.OnClientEvent:Connect(function(CoinType, Current, Capacity)
+        if CoinType == "Coin" and type(Capacity) == "number" then
+            Self.BagCap = Capacity
+            Self.IsElite = Capacity > 40
         end
     end))
 end
 
 function AutoFarm.DetectBagFull(Self)
     local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
-    AutoFarm.AddConnection(Self, Gameplay.CoinCollected.OnClientEvent:Connect(function(coinType, current, capacity)
+    AutoFarm.AddConnection(Self, Gameplay.CoinCollected.OnClientEvent:Connect(function(CoinType, Current, Capacity)
         if not Self.RoundActive or Self.BagFull or Self.Respawning or Self.DiedThisRound then return end
-        if coinType == "Coin" and type(current) == "number" and type(capacity) == "number" then
-            if current >= capacity then
+        if CoinType == "Coin" and type(Current) == "number" and type(Capacity) == "number" then
+            if Current >= Capacity then
                 Self.BagFull = true
                 if getgenv().Settings.ResetOnBagFull then
                     AutoFarm.Reset(Self)
@@ -144,10 +145,10 @@ function AutoFarm.GetNearestCoin(Self)
         if Container then
             for _, Coin in pairs(Container:GetChildren()) do
                 if Coin:GetAttribute("CoinID") == "Coin" and Coin:FindFirstChild("TouchInterest") then
-                    local d = (HRP.Position - Coin.Position).Magnitude
-                    if d < Dist then
+                    local D = (HRP.Position - Coin.Position).Magnitude
+                    if D < Dist then
                         Closest = Coin
-                        Dist = d
+                        Dist = D
                     end
                 end
             end
@@ -212,10 +213,26 @@ end
 
 local Player = game.Players.LocalPlayer
 
+if getgenv().Settings.AutoRejoin then
+    local GuiService = game:GetService("GuiService")
+    local Players = game:GetService("Players")
+    local TeleportService = game:GetService("TeleportService")
+    local LocalPlayer = Players.LocalPlayer
+    local function OnErrorMessageChanged(ErrorMessage)
+        if ErrorMessage and ErrorMessage ~= "" then
+            if LocalPlayer then
+                task.wait()
+                TeleportService:Teleport(game.PlaceId, LocalPlayer)
+            end
+        end
+    end
+    GuiService.ErrorMessageChanged:Connect(OnErrorMessageChanged)
+end
+
 if getconnections and getgenv().Settings.AntiAFK then
-    for _, connection in pairs(getconnections(Player.Idled)) do
-        if connection["Disable"] then connection["Disable"](connection)
-        elseif connection["Disconnect"] then connection["Disconnect"](connection) end
+    for _, Connection in pairs(getconnections(Player.Idled)) do
+        if Connection["Disable"] then Connection["Disable"](Connection)
+        elseif Connection["Disconnect"] then Connection["Disconnect"](Connection) end
     end
 else
     Player.Idled:Connect(function()
