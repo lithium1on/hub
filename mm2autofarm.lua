@@ -27,6 +27,7 @@ function AutoFarm.New(Player)
     Self.BagFull = false
     Self.RoundActive = false
     Self.IsElite = false
+    Self.BagCap = 40
     Self.CurrentTween = nil
     Self.Respawning = false
     Self.Connections = {}
@@ -34,15 +35,11 @@ function AutoFarm.New(Player)
     return Self
 end
 
-local function GetCharacter(Self)
-    return Self.Player.Character
-end
-
+local function GetCharacter(Self) return Self.Player.Character end
 local function GetHRP(Self)
     local Char = GetCharacter(Self)
     return Char and Char:FindFirstChild("HumanoidRootPart")
 end
-
 local function GetHumanoid(Self)
     local Char = GetCharacter(Self)
     return Char and Char:FindFirstChildWhichIsA("Humanoid")
@@ -74,9 +71,7 @@ function AutoFarm.Reset(Self)
     end
     task.spawn(function()
         local NewChar = Self.Player.CharacterAdded:Wait()
-        if NewChar then
-            Self.Respawning = false
-        end
+        if NewChar then Self.Respawning = false end
     end)
 end
 
@@ -84,103 +79,60 @@ function AutoFarm.HookDeath(Self)
     local function Attach(Char)
         local Hum = Char:FindFirstChildWhichIsA("Humanoid")
         if not Hum then return end
-        local Conn
-        Conn = Hum.Died:Connect(function()
+        AutoFarm.AddConnection(Self, Hum.Died:Connect(function()
             Self.DiedThisRound = true
             Self.Respawning = true
             AutoFarm.CancelTween(Self)
-        end)
-        AutoFarm.AddConnection(Self, Conn)
+        end))
     end
-    if Self.Player.Character then
-        Attach(Self.Player.Character)
-    end
-    AutoFarm.AddConnection(Self,
-        Self.Player.CharacterAdded:Connect(function(Char)
-            Attach(Char)
-        end)
-    )
+    if Self.Player.Character then Attach(Self.Player.Character) end
+    AutoFarm.AddConnection(Self, Self.Player.CharacterAdded:Connect(function(Char)
+        Self.Respawning = false
+        Attach(Char)
+    end))
 end
 
 function AutoFarm.DetectElite(Self)
-    local Conn = game:GetService("ReplicatedStorage")
-        .Remotes.Misc.UpdateLeaderboard.OnClientEvent:Connect(function(Data)
-            for _, Entry in pairs(Data) do
-                if Entry.PlayerName == Self.Player.Name then
-                    Self.IsElite = Entry.Elite == true
-                end
-            end
-        end)
-    AutoFarm.AddConnection(Self, Conn)
+    local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
+    AutoFarm.AddConnection(Self, Gameplay.CoinCollected.OnClientEvent:Connect(function(coinType, current, capacity)
+        if coinType == "Coin" and type(capacity) == "number" then
+            Self.BagCap = capacity
+            Self.IsElite = capacity > 40
+        end
+    end))
 end
 
 function AutoFarm.DetectBagFull(Self)
-    local Players = game:GetService("Players")
-    local BagNames = {"Coin", "SnowToken", "BeachBall", "Egg", "Candy"}
-    local function GetContainer()
-        local GUI = Players.LocalPlayer:FindFirstChild("PlayerGui")
-        if not GUI then return end
-        local Main = GUI:FindFirstChild("MainGUI")
-        local Game = Main and Main:FindFirstChild("Game")
-        local Bags = Game and Game:FindFirstChild("CoinBags")
-        return Bags and Bags:FindFirstChild("Container")
-    end
-    local function GetValue(Label)
-        if not Label then return end
-        local n = Label.Text:match("%d+")
-        return n and tonumber(n)
-    end
-    local function IsFull(Container)
-        local Cap = Self.IsElite and 50 or 40
-        for _, Name in ipairs(BagNames) do
-            local Bag = Container:FindFirstChild(Name)
-            if Bag then
-                local Label = Bag:FindFirstChild("CurrencyFrame")
-                    and Bag.CurrencyFrame:FindFirstChild("Icon")
-                    and Bag.CurrencyFrame.Icon:FindFirstChild("Coins")
-                local Value = GetValue(Label)
-                if Value and Value >= Cap then
-                    return true
+    local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
+    AutoFarm.AddConnection(Self, Gameplay.CoinCollected.OnClientEvent:Connect(function(coinType, current, capacity)
+        if not Self.RoundActive or Self.BagFull or Self.Respawning or Self.DiedThisRound then return end
+        if coinType == "Coin" and type(current) == "number" and type(capacity) == "number" then
+            if current >= capacity then
+                Self.BagFull = true
+                if getgenv().Settings.ResetOnBagFull then
+                    AutoFarm.Reset(Self)
                 end
             end
         end
-        return false
-    end
-    local function Check()
-        if not Self.RoundActive or Self.BagFull or Self.Respawning or Self.DiedThisRound then return end
-        local Container = GetContainer()
-        if Container and IsFull(Container) then
-            Self.BagFull = true
-            if getgenv().Settings.ResetOnBagFull then
-                AutoFarm.Reset(Self)
-            end
-        end
-    end
-    task.spawn(function()
-        while true do
-            task.wait(0.5)
-            Check()
-        end
-    end)
+    end))
 end
 
 function AutoFarm.DetectRounds(Self)
     local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
-    AutoFarm.AddConnection(Self,
-        Gameplay.RoundStart.OnClientEvent:Connect(function()
-            Self.RoundActive = true
-            Self.BagFull = false
-            Self.Respawning = false
-            Self.DiedThisRound = false
-        end)
-    )
-    AutoFarm.AddConnection(Self,
-        Gameplay.RoundEndFade.OnClientEvent:Connect(function()
-            AutoFarm.CancelTween(Self)
-            Self.RoundActive = false
-            Self.BagFull = false
-        end)
-    )
+    AutoFarm.AddConnection(Self, Gameplay.RoundStart.OnClientEvent:Connect(function()
+        Self.RoundActive = true
+        Self.BagFull = false
+        Self.Respawning = false
+        Self.DiedThisRound = false
+    end))
+    AutoFarm.AddConnection(Self, Gameplay.RoundEndFade.OnClientEvent:Connect(function()
+        AutoFarm.CancelTween(Self)
+        Self.RoundActive = false
+        Self.BagFull = false
+    end))
+    AutoFarm.AddConnection(Self, Gameplay.CoinsStarted.OnClientEvent:Connect(function()
+        Self.RoundActive = true
+    end))
 end
 
 function AutoFarm.GetNearestCoin(Self)
@@ -209,18 +161,9 @@ function AutoFarm.TweenTo(Self, Position, Distance)
     local Hum = GetHumanoid(Self)
     if not HRP or not Hum then return end
     AutoFarm.CancelTween(Self)
-    local TargetCFrame = CFrame.new(
-        Position.Position.X,
-        Position.Position.Y + Hum.HipHeight,
-        Position.Position.Z
-    )
-    local Speed = getgenv().Settings.Speed
-    local Time = Distance / Speed
-    local Tween = game:GetService("TweenService"):Create(
-        HRP,
-        TweenInfo.new(Time, Enum.EasingStyle.Linear),
-        {CFrame = TargetCFrame}
-    )
+    local TargetCFrame = CFrame.new(Position.Position.X, Position.Position.Y + Hum.HipHeight, Position.Position.Z)
+    local Time = Distance / getgenv().Settings.Speed
+    local Tween = game:GetService("TweenService"):Create(HRP, TweenInfo.new(Time, Enum.EasingStyle.Linear), {CFrame = TargetCFrame})
     Self.CurrentTween = Tween
     Tween:Play()
     return Tween
@@ -230,11 +173,16 @@ function AutoFarm.StartFarmingLoop(Self)
     task.spawn(function()
         while true do
             task.wait(0.1)
-            if not getgenv().Settings.Enabled
-            or not Self.RoundActive
-            or Self.BagFull
-            or Self.Respawning
-            or Self.DiedThisRound then
+            if not Self.RoundActive then
+                for _, Obj in pairs(workspace:GetChildren()) do
+                    if Obj:FindFirstChild("CoinContainer") then
+                        Self.RoundActive = true
+                        break
+                    end
+                end
+            end
+            local S = getgenv().Settings
+            if not S.Enabled or not Self.RoundActive or Self.BagFull or Self.Respawning or Self.DiedThisRound then
                 continue
             end
             local HRP = GetHRP(Self)
@@ -263,15 +211,11 @@ function AutoFarm.StartFarmingLoop(Self)
 end
 
 local Player = game.Players.LocalPlayer
-local Farm = AutoFarm.New(Player)
 
-if getconnections and getgenv().Settings and getgenv().Settings.AntiAFK then
+if getconnections and getgenv().Settings.AntiAFK then
     for _, connection in pairs(getconnections(Player.Idled)) do
-        if connection["Disable"] then
-            connection["Disable"](connection)
-        elseif connection["Disconnect"] then
-            connection["Disconnect"](connection)
-        end
+        if connection["Disable"] then connection["Disable"](connection)
+        elseif connection["Disconnect"] then connection["Disconnect"](connection) end
     end
 else
     Player.Idled:Connect(function()
@@ -280,6 +224,8 @@ else
     end)
 end
 
+local Farm = AutoFarm.New(Player)
+getgenv()._Farm = Farm
 Farm:HookDeath()
 Farm:DetectElite()
 Farm:DetectBagFull()
