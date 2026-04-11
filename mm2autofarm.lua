@@ -11,6 +11,7 @@
 ]]
 
 if getgenv().Loaded then return end
+if game.PlaceId ~= 142823291 then return end
 getgenv().Loaded = true
 
 game:GetService('StarterGui'):SetCore("SendNotification", {
