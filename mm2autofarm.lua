@@ -1,12 +1,13 @@
 --[[
-  Requires a configuration, example below:
+  For the "autoexec" people, you can also run off a config!
 
   getgenv().Settings = {
     Enabled = true,
     ResetOnBagFull = true,
     Speed = 25,
     AntiAFK = true,
-    AutoRejoin = true
+    AutoRejoin = true,
+    MaxFPS = 60
   }
 ]]
 
@@ -14,11 +15,192 @@ if getgenv().Loaded then return end
 if game.PlaceId ~= 142823291 then return end
 getgenv().Loaded = true
 
-game:GetService('StarterGui'):SetCore("SendNotification", {
-	Title = "[lithium's hub]",
-	Text = "thanks for using my script!",
-	Duration = 3
+local SettingsPreDefined = type(getgenv().Settings) == "table"
+
+local function Default(val, default)
+    if val ~= nil then return val end
+    return default
+end
+
+getgenv().Settings = getgenv().Settings or {}
+local Settings = getgenv().Settings
+Settings.Enabled = Default(Settings.Enabled, false)
+Settings.ResetOnBagFull = Default(Settings.ResetOnBagFull, true)
+Settings.Speed = Default(Settings.Speed, 25)
+Settings.AntiAFK = Default(Settings.AntiAFK, true)
+Settings.AutoRejoin = Default(Settings.AutoRejoin, true)
+Settings.MaxFPS = Default(Settings.MaxFPS, 60)
+
+local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+
+local Window = WindUI:CreateWindow({
+    Title = "lithium's hub",
+    Icon = "coins",
+    Author = "by lithium",
+    Folder = "lithium's hub",
+    Theme = "Crimson",
+    NewElements = true,
+    ScrollBarEnabled = false,
+    HideSearchBar = true,
+    User = {
+        Enabled = true,
+        Anonymous = false,
+    },
+    OpenButton = {
+        Title = "lithium's hub",
+        Icon = "coins",
+        CornerRadius = UDim.new(0, 16),
+        StrokeThickness = 2,
+        Color = ColorSequence.new(
+            Color3.fromHex("#FF4040"),
+            Color3.fromHex("#FF3030")
+        ),
+        OnlyMobile = true,
+        Enabled = true,
+        Draggable = true,
+    },
 })
+
+Window:Tag({
+    Title = "MM2",
+    Icon = "sword",
+    Color = Color3.fromHex("#FF4040"),
+    Radius = 16,
+})
+
+Window:OnDestroy(function()
+    getgenv().Enabled = false
+    Settings.Enabled = false
+end)
+
+local ConfigManager = Window.ConfigManager
+local Config = ConfigManager:CreateConfig("mm2autofarm")
+local ConfigReady = false
+
+local function SaveConfig()
+    if ConfigReady then Config:Save() end
+end
+
+local FarmTab = Window:Tab({ Title = "Farm", Icon = "coins" })
+local InfoTab = Window:Tab({ Title = "Info", Icon = "info" })
+
+FarmTab:Select()
+
+local AutofarmSection = FarmTab:Section({ Title = "Autofarm", Opened = true })
+
+AutofarmSection:Toggle({
+    Title = "Enabled",
+    Value = Settings.Enabled,
+    Flag = "FarmEnabled",
+    Callback = function(Value)
+        Settings.Enabled = Value
+        SaveConfig()
+    end
+})
+
+AutofarmSection:Toggle({
+    Title = "Reset On Bag Full",
+    Value = Settings.ResetOnBagFull,
+    Flag = "ResetOnBagFull",
+    Callback = function(Value)
+        Settings.ResetOnBagFull = Value
+        SaveConfig()
+    end
+})
+
+AutofarmSection:Slider({
+    Title = "Speed",
+    Value = { Min = 8, Max = 50, Default = Settings.Speed },
+    Step = 1,
+    Flag = "FarmSpeed",
+    Callback = function(Value)
+        if type(Value) ~= "number" then return end
+        Settings.Speed = Value
+        SaveConfig()
+    end
+})
+
+local MiscSection = FarmTab:Section({ Title = "Misc", Opened = true })
+
+MiscSection:Toggle({
+    Title = "Anti-AFK",
+    Value = Settings.AntiAFK,
+    Flag = "AntiAFK",
+    Callback = function(Value)
+        Settings.AntiAFK = Value
+        SaveConfig()
+    end
+})
+
+MiscSection:Toggle({
+    Title = "Auto Rejoin",
+    Value = Settings.AutoRejoin,
+    Flag = "AutoRejoin",
+    Callback = function(Value)
+        Settings.AutoRejoin = Value
+        SaveConfig()
+    end
+})
+
+if setfpscap then
+    MiscSection:Slider({
+        Title = "Max FPS",
+        Value = { Min = 10, Max = 240, Default = Settings.MaxFPS },
+        Step = 10,
+        Flag = "MaxFPS",
+        Callback = function(Value)
+            if type(Value) ~= "number" then return end
+            Settings.MaxFPS = Value
+            setfpscap(Value)
+            SaveConfig()
+        end
+    })
+end
+
+local StatusSection = InfoTab:Section({ Title = "Status", Opened = true })
+local StatusParagraph = StatusSection:Paragraph({ Title = "Round", Desc = "Waiting...", Image = "activity" })
+local BagParagraph = StatusSection:Paragraph({ Title = "Bag", Desc = "0 / 40", Image = "shopping-bag" })
+local EliteParagraph = StatusSection:Paragraph({ Title = "Elite Bag", Desc = "No", Image = "star" })
+
+local ScriptSection = InfoTab:Section({ Title = "Script", Opened = true })
+
+ScriptSection:Dropdown({
+    Title = "Theme",
+    Values = { "Dark", "Light", "Rose", "Plant", "Red", "Indigo", "Sky", "Violet", "Amber", "Emerald", "Midnight", "Crimson", "MonokaiPro", "CottonCandy", "Mellowsi", "Rainbow" },
+    Value = "Crimson",
+    Flag = "Theme",
+    Callback = function(Value)
+        WindUI:SetTheme(Value)
+        SaveConfig()
+    end
+})
+
+ScriptSection:Keybind({
+    Title = "Toggle UI",
+    Desc = "Press to rebind",
+    Value = "K",
+    Flag = "ToggleUIKeybind",
+    Callback = function(v)
+        Window:SetToggleKey(Enum.KeyCode[v])
+        SaveConfig()
+    end
+})
+
+if not SettingsPreDefined then
+    Config:Load()
+end
+
+ConfigReady = true
+
+WindUI:Notify({
+    Title = "lithium's hub",
+    Content = "thanks for using my script!",
+    Duration = 3,
+    Icon = "coins",
+})
+
+local Player = game.Players.LocalPlayer
+local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
 
 local AutoFarm = {}
 AutoFarm.__index = AutoFarm
@@ -64,6 +246,7 @@ function AutoFarm.Reset(Self)
     Self.BagFull = false
     Self.DiedThisRound = true
     AutoFarm.CancelTween(Self)
+    StatusParagraph:SetDesc("Waiting...")
     local Humanoid = GetHumanoid(Self)
     if Humanoid then
         Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
@@ -78,62 +261,108 @@ function AutoFarm.Reset(Self)
 end
 
 function AutoFarm.HookDeath(Self)
+    local CRC = require(game:GetService("ReplicatedStorage").Modules.CurrentRoundClient)
+
+    AutoFarm.AddConnection(Self, CRC.PlayerDataChanged.Event:Connect(function()
+        local Data = CRC.GetLatestPlayerData()
+        local MyData = Data and Data[Self.Player.Name]
+        if MyData and MyData.Dead == true and Self.RoundActive then
+            Self.DiedThisRound = true
+            Self.Respawning = true
+            AutoFarm.CancelTween(Self)
+            StatusParagraph:SetDesc("Waiting...")
+        end
+    end))
+
     local function Attach(Char)
         local Hum = Char:FindFirstChildWhichIsA("Humanoid")
         if not Hum then return end
         AutoFarm.AddConnection(Self, Hum.Died:Connect(function()
-            Self.DiedThisRound = true
-            Self.Respawning = true
-            AutoFarm.CancelTween(Self)
+            if Self.RoundActive then
+                Self.DiedThisRound = true
+                Self.Respawning = true
+                AutoFarm.CancelTween(Self)
+                StatusParagraph:SetDesc("Waiting...")
+            end
         end))
     end
     if Self.Player.Character then Attach(Self.Player.Character) end
     AutoFarm.AddConnection(Self, Self.Player.CharacterAdded:Connect(function(Char)
+        task.wait()
         Self.Respawning = false
         Attach(Char)
     end))
 end
 
-function AutoFarm.DetectElite(Self)
-    local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
+function AutoFarm.DetectCoins(Self)
     AutoFarm.AddConnection(Self, Gameplay.CoinCollected.OnClientEvent:Connect(function(CoinType, Current, Capacity)
-        if CoinType == "Coin" and type(Capacity) == "number" then
+        if CoinType ~= "Coin" or type(Current) ~= "number" or type(Capacity) ~= "number" then return end
+
+        BagParagraph:SetDesc(Current .. " / " .. Capacity)
+
+        if Self.BagCap ~= Capacity then
             Self.BagCap = Capacity
             Self.IsElite = Capacity > 40
+            EliteParagraph:SetDesc(Self.IsElite and "Yes" or "No")
         end
-    end))
-end
 
-function AutoFarm.DetectBagFull(Self)
-    local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
-    AutoFarm.AddConnection(Self, Gameplay.CoinCollected.OnClientEvent:Connect(function(CoinType, Current, Capacity)
         if not Self.RoundActive or Self.BagFull or Self.Respawning or Self.DiedThisRound then return end
-        if CoinType == "Coin" and type(Current) == "number" and type(Capacity) == "number" then
-            if Current >= Capacity then
-                Self.BagFull = true
-                if getgenv().Settings.ResetOnBagFull then
-                    AutoFarm.Reset(Self)
-                end
+        if Current >= Capacity then
+            Self.BagFull = true
+            if Settings.ResetOnBagFull then
+                AutoFarm.Reset(Self)
             end
         end
     end))
 end
 
 function AutoFarm.DetectRounds(Self)
-    local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
+    local CRC = require(game:GetService("ReplicatedStorage").Modules.CurrentRoundClient)
+
+    local MyData = CRC.PlayerData and CRC.PlayerData[Self.Player.Name]
+    if MyData then
+        Self.RoundActive = true
+        Self.DiedThisRound = MyData.Dead == true
+        StatusParagraph:SetDesc(Self.DiedThisRound and "Waiting..." or "Active")
+    else
+        StatusParagraph:SetDesc("Waiting...")
+    end
+
     AutoFarm.AddConnection(Self, Gameplay.RoundStart.OnClientEvent:Connect(function()
         Self.RoundActive = true
         Self.BagFull = false
         Self.Respawning = false
         Self.DiedThisRound = false
+        StatusParagraph:SetDesc("Active")
+        BagParagraph:SetDesc("0 / " .. Self.BagCap)
     end))
-    AutoFarm.AddConnection(Self, Gameplay.RoundEndFade.OnClientEvent:Connect(function()
+
+    AutoFarm.AddConnection(Self, Gameplay.VictoryScreen.OnClientEvent:Connect(function()
         AutoFarm.CancelTween(Self)
         Self.RoundActive = false
         Self.BagFull = false
+        StatusParagraph:SetDesc("Ended")
     end))
-    AutoFarm.AddConnection(Self, Gameplay.CoinsStarted.OnClientEvent:Connect(function()
-        Self.RoundActive = true
+
+    AutoFarm.AddConnection(Self, CRC.PlayerDataChanged.Event:Connect(function()
+        local Data = CRC.GetLatestPlayerData()
+        local isEmpty = true
+        for _ in pairs(Data) do isEmpty = false break end
+        if isEmpty then
+            AutoFarm.CancelTween(Self)
+            Self.RoundActive = false
+            Self.BagFull = false
+            StatusParagraph:SetDesc("Waiting...")
+        end
+    end))
+
+    AutoFarm.AddConnection(Self, Gameplay.RoundEndFade.OnClientEvent:Connect(function()
+        if Self.RoundActive then
+            AutoFarm.CancelTween(Self)
+            Self.RoundActive = false
+            Self.BagFull = false
+            StatusParagraph:SetDesc("Ended")
+        end
     end))
 end
 
@@ -164,8 +393,11 @@ function AutoFarm.TweenTo(Self, Position, Distance)
     if not HRP or not Hum then return end
     AutoFarm.CancelTween(Self)
     local TargetCFrame = CFrame.new(Position.Position.X, Position.Position.Y + Hum.HipHeight, Position.Position.Z)
-    local Time = Distance / getgenv().Settings.Speed
-    local Tween = game:GetService("TweenService"):Create(HRP, TweenInfo.new(Time, Enum.EasingStyle.Linear), {CFrame = TargetCFrame})
+    local Tween = game:GetService("TweenService"):Create(
+        HRP,
+        TweenInfo.new(Distance / Settings.Speed, Enum.EasingStyle.Linear),
+        { CFrame = TargetCFrame }
+    )
     Self.CurrentTween = Tween
     Tween:Play()
     return Tween
@@ -175,16 +407,7 @@ function AutoFarm.StartFarmingLoop(Self)
     task.spawn(function()
         while true do
             task.wait(0.1)
-            if not Self.RoundActive then
-                for _, Obj in pairs(workspace:GetChildren()) do
-                    if Obj:FindFirstChild("CoinContainer") then
-                        Self.RoundActive = true
-                        break
-                    end
-                end
-            end
-            local S = getgenv().Settings
-            if not S.Enabled or not Self.RoundActive or Self.BagFull or Self.Respawning or Self.DiedThisRound then
+            if not Settings.Enabled or not Self.RoundActive or Self.BagFull or Self.Respawning or Self.DiedThisRound then
                 continue
             end
             local HRP = GetHRP(Self)
@@ -212,25 +435,27 @@ function AutoFarm.StartFarmingLoop(Self)
     end)
 end
 
-local Player = game.Players.LocalPlayer
-
-if getgenv().Settings.AutoRejoin then
-    local GuiService = game:GetService("GuiService")
-    local Players = game:GetService("Players")
-    local TeleportService = game:GetService("TeleportService")
-    local LocalPlayer = Players.LocalPlayer
-    local function OnErrorMessageChanged(ErrorMessage)
-        if ErrorMessage and ErrorMessage ~= "" then
-            if LocalPlayer then
-                task.wait()
-                TeleportService:Teleport(game.PlaceId, LocalPlayer)
-            end
-        end
-    end
-    GuiService.ErrorMessageChanged:Connect(OnErrorMessageChanged)
+function AutoFarm.Load(Self)
+    local Farm = AutoFarm.New(Player)
+    getgenv()._Farm = Farm
+    Farm:HookDeath()
+    Farm:DetectCoins()
+    Farm:DetectRounds()
+    Farm:StartFarmingLoop()
 end
 
-if getconnections and getgenv().Settings.AntiAFK then
+if Settings.AutoRejoin then
+    local GuiService = game:GetService("GuiService")
+    local TeleportService = game:GetService("TeleportService")
+    GuiService.ErrorMessageChanged:Connect(function(ErrorMessage)
+        if ErrorMessage and ErrorMessage ~= "" then
+            task.wait()
+            TeleportService:Teleport(game.PlaceId, Player)
+        end
+    end)
+end
+
+if getconnections and Settings.AntiAFK then
     for _, Connection in pairs(getconnections(Player.Idled)) do
         if Connection["Disable"] then Connection["Disable"](Connection)
         elseif Connection["Disconnect"] then Connection["Disconnect"](Connection) end
@@ -242,10 +467,4 @@ else
     end)
 end
 
-local Farm = AutoFarm.New(Player)
-getgenv()._Farm = Farm
-Farm:HookDeath()
-Farm:DetectElite()
-Farm:DetectBagFull()
-Farm:DetectRounds()
-Farm:StartFarmingLoop()
+AutoFarm:Load()
