@@ -324,7 +324,7 @@ function AutoFarm.DetectCoins(Self)
         if not Self.RoundActive or Self.BagFull or Self.Respawning or Self.DiedThisRound then return end
         if Current >= Capacity then
             Self.BagFull = true
-            if Settings.ResetOnBagFull then
+            if Settings.ResetOnBagFull and Settings.Enabled then
                 AutoFarm.Reset(Self)
             end
         end
