@@ -70,6 +70,7 @@ Window:Tag({
 
 Window:OnDestroy(function()
     getgenv().Enabled = false
+    getgenv().Loaded = false
     Settings.Enabled = false
 end)
 
