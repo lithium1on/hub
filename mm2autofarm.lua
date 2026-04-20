@@ -17,6 +17,13 @@ if getgenv().Loaded then return end
 if game.PlaceId ~= 142823291 then return end
 getgenv().Loaded = true
 
+local Queue = queueonteleport or queue_on_teleport
+if Queue then
+    Queue([[
+        loadstring(game:HttpGet("https://script.lithium.wtf/mm2autofarm.lua"))()
+    ]])
+end
+
 local SettingsPreDefined = type(getgenv().Settings) == "table"
 
 local function Default(val, default)
