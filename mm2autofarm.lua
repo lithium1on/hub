@@ -1,5 +1,6 @@
 --[[
   For the "autoexec" people, you can also run off a config!
+  Example below:
 
   getgenv().Settings = {
     Enabled = true,
@@ -7,6 +8,7 @@
     Speed = 25,
     AntiAFK = true,
     AutoRejoin = true,
+    Rendering = true,
     MaxFPS = 60
   }
 ]]
@@ -29,6 +31,7 @@ Settings.ResetOnBagFull = Default(Settings.ResetOnBagFull, true)
 Settings.Speed = Default(Settings.Speed, 25)
 Settings.AntiAFK = Default(Settings.AntiAFK, true)
 Settings.AutoRejoin = Default(Settings.AutoRejoin, true)
+Settings.Rendering = Default(Settings.Rendering, true)
 Settings.MaxFPS = Default(Settings.MaxFPS, 60)
 
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
@@ -139,6 +142,17 @@ MiscSection:Toggle({
     Flag = "AutoRejoin",
     Callback = function(Value)
         Settings.AutoRejoin = Value
+        SaveConfig()
+    end
+})
+
+MiscSection:Toggle({
+    Title = "3D Rendering",
+    Value = Settings.Rendering,
+    Flag = "3DRendering",
+    Callback = function(Value)
+        game:GetService("RunService"):Set3dRenderingEnabled(Value)
+        Settings.Rendering = Value
         SaveConfig()
     end
 })
