@@ -428,7 +428,7 @@ end
 function AutoFarm.StartFarmingLoop(Self)
     task.spawn(function()
         while true do
-            task.wait(0.1)
+            task.wait()
             if not Settings.Enabled or not Self.RoundActive or Self.BagFull or Self.Respawning or Self.DiedThisRound then
                 continue
             end
