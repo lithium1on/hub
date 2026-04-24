@@ -236,9 +236,7 @@ function AutoFarm:StartFarmingLoop()
         while true do
             task.wait()
 
-            if Settings.Rendering ~= game:GetService("RunService"):Set3dRenderingEnabled() then
-                game:GetService("RunService"):Set3dRenderingEnabled(Settings.Rendering)
-            end
+            game:GetService("RunService"):Set3dRenderingEnabled(Settings.Rendering)
 
             if setfpscap then setfpscap(Settings.MaxFPS) end
 
