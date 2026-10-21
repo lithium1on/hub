@@ -77,6 +77,11 @@ local function Table(Value)
     return {}
 end
 
+local function ResetSetting(Value)
+    if type(Value) == "boolean" or type(Value) == "table" then return Value end
+    return true
+end
+
 local function Resolve()
     local S = getgenv().Settings
     local Root = Bool(S.Enabled, true)
@@ -90,7 +95,7 @@ local function Resolve()
         Enabled = Root,
         AutoFarm = {
             Enabled = Root and Bool(AF.Enabled, true),
-            ResetOnBagFull = Bool(AF.ResetOnBagFull, true),
+            ResetOnBagFull = ResetSetting(AF.ResetOnBagFull),
             AllowedCoinTypes = AF.AllowedCoinTypes,
             Method = {
                 Type = Pick(M.Type, { "Tween", "Teleportation", "Silent" }, "Tween"),
@@ -127,6 +132,21 @@ local function Resolve()
     end
 
     return Cfg
+end
+
+local function ResetAllowedForRole(Value, Role)
+    if type(Value) == "boolean" then return Value end
+    if type(Value) ~= "table" then return true end
+    if type(Role) ~= "string" then return false end
+    local Lower = string.lower(Role)
+    for Key, Entry in pairs(Value) do
+        if type(Key) == "number" then
+            if type(Entry) == "string" and string.lower(Entry) == Lower then return true end
+        elseif type(Key) == "string" and Entry == true and string.lower(Key) == Lower then
+            return true
+        end
+    end
+    return false
 end
 
 local function IsCoinTypeAllowed(Allowed, CoinType)
@@ -176,6 +196,9 @@ function AutoFarm.New(Player)
     Self.Frozen = false
     Self.Parked = false
     Self.ParkedChar = nil
+    Self.HoldCF = nil
+    Self.Elevated = false
+    Self.GravForce = nil
     Self.PreRoundMap = nil
     Self.PreRoundSince = 0
     Self.CoinChange = 0
@@ -254,6 +277,7 @@ end
 
 function AutoFarm:Freeze(Hum)
     Hum.AutoRotate = false
+    Hum.PlatformStand = true
     local Char = GetCharacter(self)
     local Animate = Char and Char:FindFirstChild("Animate")
     if Animate and Animate:IsA("LocalScript") then Animate.Disabled = true end
@@ -266,10 +290,23 @@ function AutoFarm:Freeze(Hum)
     self.Frozen = true
 end
 
+function AutoFarm:RemoveGravForce()
+    if self.GravForce then
+        local Att = self.GravForce.Attachment0
+        self.GravForce:Destroy()
+        if Att then Att:Destroy() end
+        self.GravForce = nil
+    end
+end
+
 function AutoFarm:Unfreeze()
     self.Frozen = false
+    self:RemoveGravForce()
     local Hum = GetHumanoid(self)
-    if Hum then Hum.AutoRotate = true end
+    if Hum then
+        Hum.PlatformStand = false
+        Hum.AutoRotate = true
+    end
     local Char = GetCharacter(self)
     local Animate = Char and Char:FindFirstChild("Animate")
     if Animate and Animate:IsA("LocalScript") then Animate.Disabled = false end
@@ -279,8 +316,61 @@ function AutoFarm:Release()
     self:CancelTween()
     self.Parked = false
     self.ParkedChar = nil
+    self.HoldCF = nil
     if self.Anchored then self:Unanchor() end
     if self.Frozen then self:Unfreeze() end
+end
+
+function AutoFarm:HookPhysics()
+    self:AddConnection(RunService.Stepped:Connect(function()
+        if not self.Frozen then return end
+        local Char = GetCharacter(self)
+        if not Char then return end
+        for _, Part in ipairs(Char:GetChildren()) do
+            if Part:IsA("BasePart") then Part.CanCollide = false end
+        end
+    end))
+
+    self:AddConnection(RunService.Heartbeat:Connect(function()
+        local HRP = GetHRP(self)
+        if not HRP then return end
+
+        if self.Frozen then
+            if not HRP.Anchored then
+                HRP.AssemblyLinearVelocity = Vector3.zero
+                HRP.AssemblyAngularVelocity = Vector3.zero
+            end
+
+            local Force = self.GravForce
+            if not Force or Force.Parent ~= HRP then
+                self:RemoveGravForce()
+                local Att = Instance.new("Attachment")
+                Att.Name = "FarmGravAtt"
+                Att.Parent = HRP
+                Force = Instance.new("VectorForce")
+                Force.Name = "FarmGrav"
+                Force.Attachment0 = Att
+                Force.RelativeTo = Enum.ActuatorRelativeTo.World
+                Force.ApplyAtCenterOfMass = true
+                Force.Parent = HRP
+                self.GravForce = Force
+            end
+            Force.Force = Vector3.new(0, workspace.Gravity * HRP.AssemblyMass, 0)
+        elseif self.GravForce then
+            self:RemoveGravForce()
+        end
+
+        if self.Parked and self.HoldCF and self.ParkedChar == GetCharacter(self) then
+            if not HRP.Anchored then
+                HRP.AssemblyLinearVelocity = Vector3.zero
+                HRP.Anchored = true
+                self.Anchored = true
+            end
+            if (HRP.Position - self.HoldCF.Position).Magnitude > 1 then
+                HRP.CFrame = self.HoldCF
+            end
+        end
+    end))
 end
 
 function AutoFarm:Reset()
@@ -309,7 +399,7 @@ function AutoFarm:HookDeath()
     self:AddConnection(CRC.PlayerDataChanged.Event:Connect(function()
         local Data = CRC.GetLatestPlayerData()
         local MyData = Data and Data[self.Player.Name]
-        if MyData and MyData.Dead == true and self.RoundActive then
+        if MyData and MyData.Dead == true and self.RoundActive and not self.DiedThisRound then
             self.DiedThisRound = true
             self.Respawning = true
             self:CancelTween()
@@ -320,7 +410,7 @@ function AutoFarm:HookDeath()
         local Hum = Char:FindFirstChildWhichIsA("Humanoid")
         if not Hum then return end
         self:AddConnection(Hum.Died:Connect(function()
-            if self.RoundActive then
+            if self.RoundActive and not self.DiedThisRound then
                 self.DiedThisRound = true
                 self.Respawning = true
                 self:CancelTween()
@@ -333,8 +423,27 @@ function AutoFarm:HookDeath()
         task.wait()
         self.Respawning = false
         self.PreRoundMap = nil
+        self.Elevated = false
+        self.Parked = false
+        self.ParkedChar = nil
+        self.HoldCF = nil
         Attach(Char)
     end))
+end
+
+function AutoFarm:GetRole()
+    local Ok, Role = pcall(function()
+        local CRC = require(game:GetService("ReplicatedStorage").Modules.CurrentRoundClient)
+        local Data = CRC.GetLatestPlayerData()
+        local MyData = Data and Data[self.Player.Name]
+        return MyData and MyData.Role
+    end)
+    return Ok and Role or nil
+end
+
+function AutoFarm:ShouldReset(Value)
+    if type(Value) == "boolean" then return Value end
+    return ResetAllowedForRole(Value, self:GetRole())
 end
 
 function AutoFarm:DetectCoins()
@@ -345,7 +454,7 @@ function AutoFarm:DetectCoins()
         if not self.RoundActive or self.BagFull or self.Respawning or self.DiedThisRound then return end
         if Current >= Capacity then
             self.BagFull = true
-            if Cfg.AutoFarm.ResetOnBagFull and Cfg.AutoFarm.Enabled then
+            if Cfg.AutoFarm.Enabled and self:ShouldReset(Cfg.AutoFarm.ResetOnBagFull) then
                 self:Reset()
             end
         end
@@ -371,6 +480,7 @@ function AutoFarm:DetectRounds()
     self:AddConnection(Gameplay.TeleportToPart.OnClientEvent:Connect(function(Part)
         self.Parked = false
         self.ParkedChar = nil
+        self.HoldCF = nil
         if self.Anchored then self:Unanchor() end
         local Map = typeof(Part) == "Instance" and FindMap(Part) or nil
         self.PreRoundMap = Map
@@ -535,6 +645,7 @@ function AutoFarm:Hide(Map, Height)
     if not HRP then return end
     local Y = (self:GetTopY(Map) or (HRP.Position.Y + 50)) + Height
     HRP.CFrame = CFrame.new(HRP.Position.X, Y, HRP.Position.Z) * HRP.CFrame.Rotation
+    self.Elevated = true
 end
 
 function AutoFarm:GetLobbySpot(Depth)
@@ -557,16 +668,18 @@ function AutoFarm:ParkUnderLobby(Cfg)
     if not Spot then return end
 
     self:CancelTween()
+    self:Freeze(Hum)
     if HRP.Anchored then
         self:Unanchor()
         task.wait()
     end
-    self:Freeze(Hum)
     HRP.CFrame = CFrame.new(Spot) * UprightRotation(HRP)
+    self.Elevated = true
     task.wait(Cfg.AutoFarm.Method.FreezeSettle)
 
     if self:WaitingForRound(Resolve()) and GetHRP(self) == HRP then
         self:Anchor()
+        self.HoldCF = HRP.CFrame
         self.Parked = true
         self.ParkedChar = Char
     end
@@ -594,11 +707,11 @@ function AutoFarm:ParkOnMap(Cfg)
     if self.Parked and self.ParkedChar == Char and HRP.Anchored then return end
 
     self:CancelTween()
+    self:Freeze(Hum)
     if HRP.Anchored then
         self:Unanchor()
         task.wait()
     end
-    self:Freeze(Hum)
 
     local Settle = Cfg.AutoFarm.Method.FreezeSettle
     task.wait(Settle)
@@ -610,6 +723,7 @@ function AutoFarm:ParkOnMap(Cfg)
     if self.PreRoundMap == Map and GetHRP(self) == HRP
         and (self:WaitingForRound(Now) or not self:GetNearestCoin(Now)) then
         self:Anchor()
+        self.HoldCF = HRP.CFrame
         self.Parked = true
         self.ParkedChar = Char
     end
@@ -633,9 +747,6 @@ function AutoFarm:StartFarmingLoop()
                     else
                         self:Release()
                     end
-                elseif Cfg.AutoFarm.Enabled and self.RoundActive and self.BagFull
-                    and not self.Respawning and not self.DiedThisRound then
-                    if not self.Anchored then self:Anchor() end
                 else
                     self:Release()
                 end
@@ -662,6 +773,7 @@ function AutoFarm:StartFarmingLoop()
             if self.Parked then
                 self.Parked = false
                 self.ParkedChar = nil
+                self.HoldCF = nil
             end
 
             if self.Anchored then
@@ -675,7 +787,7 @@ function AutoFarm:StartFarmingLoop()
             local Goal = self:GetGoal(Coin, HRP, Hum, Method.BodyPart, Method.Offset)
             local Result = false
 
-            if Method.Type == "Tween" then
+            if Method.Type == "Tween" and not self.Elevated then
                 HRP.CFrame = CFrame.new(HRP.Position) * Goal.Rotation
                 local Distance = (Goal.Position - HRP.Position).Magnitude
                 local Tween = self:TweenTo(Goal, Distance, Method.TweenSpeed)
@@ -685,6 +797,7 @@ function AutoFarm:StartFarmingLoop()
                 end
             else
                 HRP.CFrame = Goal
+                if Method.Type == "Tween" then self.Elevated = false end
                 Result = self:WaitForCoin(Coin, Method.CoinTimeout, Method.SkipTime, false)
                 if Method.Type == "Silent" and Result ~= "retarget" then
                     self:Hide(Map, Method.SilentHeight)
@@ -701,6 +814,7 @@ end
 function AutoFarm:Load()
     local Farm = AutoFarm.New(Player)
     getgenv()._Farm = Farm
+    Farm:HookPhysics()
     Farm:HookDeath()
     Farm:DetectCoins()
     Farm:DetectRounds()
