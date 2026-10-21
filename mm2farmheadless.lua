@@ -37,6 +37,8 @@
   }
 ]]
 
+if not game:IsLoaded() then game.Loaded:Wait() end
+
 if getgenv().Loaded then return end
 if getgenv().Settings == nil then return end
 if game.PlaceId ~= 142823291 then return end
@@ -48,7 +50,7 @@ local GuiService = game:GetService("GuiService")
 local TeleportService = game:GetService("TeleportService")
 
 local Player = game.Players.LocalPlayer
-local Gameplay = game:GetService("ReplicatedStorage"):WaitForChild("Remotes").Gameplay
+local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
 
 local function Bool(Value, Default)
     if type(Value) == "boolean" then return Value end
