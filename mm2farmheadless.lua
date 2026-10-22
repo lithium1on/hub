@@ -133,7 +133,9 @@ local WebhookState = {
     LastEvent = {},
     RecentSends = {},
     Queue = {},
-    WorkerActive = false
+    WorkerActive = false,
+    PlayerAvatarBustUrl = nil,
+    PlayerAvatarBustRetryAt = 0
 }
 
 local WebhookColors = {
@@ -201,6 +203,49 @@ end
 local function GetRequestStatus(Response)
     if type(Response) ~= "table" then return nil end
     return tonumber(Response.StatusCode or Response.Status or Response.status_code)
+end
+
+local function NormalizeEmbedText(Value)
+    local Text = string.lower(tostring(Value or ""))
+    Text = string.gsub(Text, "[%s%p]+", "")
+    return Text
+end
+
+local function GetPlayerAvatarBustUrl(Config)
+    local Appearance = Table(Config and Config.Appearance)
+    local ConfiguredUrl = Appearance.AvatarBustUrl
+    if type(ConfiguredUrl) == "string" and string.match(ConfiguredUrl, "^https://") then
+        return ConfiguredUrl
+    end
+
+    if WebhookState.PlayerAvatarBustUrl then
+        return WebhookState.PlayerAvatarBustUrl
+    end
+    if os.clock() < WebhookState.PlayerAvatarBustRetryAt then return nil end
+    WebhookState.PlayerAvatarBustRetryAt = os.clock() + 60
+
+    local ThumbnailUrl = "https://thumbnails.roblox.com/v1/users/avatar-bust?userIds="
+        .. tostring(Player.UserId)
+        .. "&size=150x150&format=Png&isCircular=false"
+    local Ok, Response = pcall(function()
+        return request({ Url = ThumbnailUrl, Method = "GET" })
+    end)
+    if not Ok or type(Response) ~= "table" or Response.Success == false then return nil end
+
+    local Status = GetRequestStatus(Response)
+    if Status and (Status < 200 or Status >= 300) then return nil end
+
+    local DecodedOk, Body = pcall(function()
+        return HttpService:JSONDecode(Response.Body)
+    end)
+    if not DecodedOk or type(Body) ~= "table" or type(Body.data) ~= "table" then return nil end
+
+    local Entry = Body.data[1]
+    local ImageUrl = type(Entry) == "table" and Entry.imageUrl or nil
+    if type(ImageUrl) == "string" and string.match(ImageUrl, "^https://") then
+        WebhookState.PlayerAvatarBustUrl = ImageUrl
+    end
+    return WebhookState.PlayerAvatarBustUrl
 end
 
 local function QueueWebhookRequest(RequestData)
@@ -286,12 +331,22 @@ local function SendWebhook(EventName, Title, Description, Fields, OverrideColor,
     if Appearance.IncludeJobId == true and game.JobId ~= "" then AddField(EmbedFields, "Job ID", game.JobId, false) end
 
     local Color = tonumber(OverrideColor) or tonumber(Table(Appearance.Colors)[EventName]) or WebhookColors[EventName] or 0x5865F2
+    local EmbedTitle = tostring(Title or EventName)
+    local EmbedDescription = tostring(Description or "")
     local Embed = {
-        title = tostring(Title or EventName),
-        description = tostring(Description or ""),
+        title = EmbedTitle,
         color = Color,
         fields = EmbedFields
     }
+    if EmbedDescription ~= "" and NormalizeEmbedText(EmbedDescription) ~= NormalizeEmbedText(EmbedTitle) then
+        Embed.description = EmbedDescription
+    end
+    if Appearance.IncludeAvatarBust ~= false then
+        local AvatarBustUrl = GetPlayerAvatarBustUrl(Config)
+        if type(AvatarBustUrl) == "string" and string.match(AvatarBustUrl, "^https://") then
+            Embed.thumbnail = { url = AvatarBustUrl }
+        end
+    end
     if Appearance.Timestamp ~= false then Embed.timestamp = GetIsoTimestamp() end
     local Footer = Appearance.Footer
     if Footer == nil then Footer = "MM2 AutoFarm" end
@@ -302,8 +357,9 @@ local function SendWebhook(EventName, Title, Description, Fields, OverrideColor,
         embeds = { Embed },
         allowed_mentions = { parse = {}, users = {}, roles = {} }
     }
-    if type(Config.AvatarUrl) == "string" and string.match(Config.AvatarUrl, "^https://") then
-        Payload.avatar_url = Config.AvatarUrl
+    local CustomWebhookAvatarUrl = Config.AvatarUrl
+    if type(CustomWebhookAvatarUrl) == "string" and string.match(CustomWebhookAvatarUrl, "^https://") then
+        Payload.avatar_url = CustomWebhookAvatarUrl
     end
 
     local Mentions = Table(Config.Mentions)
@@ -494,6 +550,7 @@ function AutoFarm.New(Player)
     Self.SpawnPos = nil
     Self.SessionStartedAt = os.clock()
     Self.RoundStartedAt = nil
+    Self.FirstCoinHopPending = false
     Self.RoundNumber = 0
     Self.CompletedRounds = 0
     Self.RoundReported = true
@@ -570,6 +627,7 @@ function AutoFarm:BeginRound(Notify)
     end
     self.RoundNumber += 1
     self.RoundStartedAt = os.clock()
+    self.FirstCoinHopPending = true
     self.RoundStats = NewStats()
     self.RoundActive = true
     self.RoundReported = false
@@ -645,6 +703,7 @@ function AutoFarm:EvaluateLowEfficiency(Stats)
 end
 
 function AutoFarm:FinishRound()
+    self.FirstCoinHopPending = false
     if not self.RoundActive or self.RoundReported then
         self.RoundActive = false
         self.PreRound = false
@@ -681,9 +740,11 @@ function AutoFarm:FinishRound()
         end
         if SummaryOptions.IncludeSessionTotals == true then
             AddField(Fields, "Session Items", self.SessionStats.Total or 0, true)
-            AddField(Fields, "Session Breakdown", FormatStatsBreakdown(self.SessionStats), false)
+            if SummaryOptions.IncludeSessionBreakdown == true then
+                AddField(Fields, "Session Breakdown", FormatStatsBreakdown(self.SessionStats), false)
+            end
         end
-        SendWebhook("RoundSummary", "Round Finished", "Round finished.", Fields)
+        SendWebhook("RoundSummary", "Round Finished", nil, Fields)
     end
 
     local SessionOptions = GetWebhookEventOptions(Config, "SessionSummary")
@@ -709,7 +770,9 @@ function AutoFarm:FinishRound()
         if SessionOptions.IncludeLowEfficiencyWarnings ~= false then
             AddField(Fields, "Low-Efficiency Alerts", self.LowEfficiencyAlertCount or 0, true)
         end
-        AddField(Fields, "Collection Breakdown", FormatStatsBreakdown(self.SessionStats), false)
+        if SessionOptions.IncludeCollectionBreakdown ~= false then
+            AddField(Fields, "Collection Breakdown", FormatStatsBreakdown(self.SessionStats), false)
+        end
         SendWebhook("SessionSummary", "Session Summary", "Periodic session statistics.", Fields)
     end
 
@@ -737,7 +800,7 @@ function AutoFarm:NotifyBagFull(Current, Capacity, Action)
         AddField(Fields, "Round Items Collected", self.RoundStats.Total or 0, true)
         AddField(Fields, "Round Breakdown", FormatStatsBreakdown(self.RoundStats), false)
     end
-    SendWebhook("BagFull", "Bag is Full", "Bag is full.", Fields)
+    SendWebhook("BagFull", "Bag is Full", nil, Fields)
 end
 
 function AutoFarm:HandleDeath()
@@ -1255,6 +1318,54 @@ function AutoFarm:WaitForCoin(Coin, Timeout, SkipTime, Retarget)
     return false
 end
 
+function AutoFarm:Hop(Goal, Coin)
+    for _ = 1, 2 do
+        for _, Height in ipairs({ 2, 0 }) do
+            local HRP = GetHRP(self)
+            if not HRP or not Coin.Parent or not Coin:FindFirstChild("TouchInterest") then return end
+            if not self:CanFarm(Resolve()) then return end
+            HRP.CFrame = Goal + Vector3.new(0, Height, 0)
+            task.wait(0.05)
+        end
+    end
+end
+
+function AutoFarm:WaitForFirstCoinTween(Tween, Goal, Coin, Distance, Speed, Timeout, SkipTime)
+    local End = os.clock() + Distance / Speed + Timeout
+    local Seen = self.CoinChange
+
+    while os.clock() < End do
+        task.wait()
+
+        if not Coin.Parent or not Coin:FindFirstChild("TouchInterest") then
+            self.FirstCoinHopPending = false
+            return true
+        end
+
+        local Cfg = Resolve()
+        if not self:CanFarm(Cfg) then return false end
+
+        if Tween.PlaybackState == Enum.PlaybackState.Completed then
+            self.FirstCoinHopPending = false
+            self:Hop(Goal, Coin)
+            return self:WaitForCoin(Coin, Timeout, SkipTime, false)
+        end
+
+        if self.CoinChange ~= Seen then
+            Seen = self.CoinChange
+            local HRP = GetHRP(self)
+            local Best = HRP and self:GetNearestCoin(Cfg)
+            if Best and Best ~= Coin
+                and (HRP.Position - Best.Position).Magnitude + 1 < (HRP.Position - Coin.Position).Magnitude then
+                return "retarget"
+            end
+        end
+    end
+
+    self.Skip[Coin] = os.clock() + SkipTime
+    return false
+end
+
 function AutoFarm:Pause(Seconds, Settle)
     task.wait(Settle)
     if not self:CanFarm(Resolve()) then return end
@@ -1402,18 +1513,32 @@ function AutoFarm:StartFarmingLoop()
                 Goal = self:GetGoal(Coin, HRP, Hum, Method.BodyPart, Method.Offset)
             end
 
+            local IsFirstRoundCoin = self.FirstCoinHopPending
+
             if not Teleport then
                 HRP.CFrame = CFrame.new(HRP.Position) * Goal.Rotation
                 local Distance = (Goal.Position - HRP.Position).Magnitude
                 local Tween = self:TweenTo(Goal, Distance, Method.TweenSpeed)
                 if Tween then
-                    Result = self:WaitForCoin(Coin, Distance / Method.TweenSpeed + Method.CoinTimeout, Method.SkipTime, true)
+                    if IsFirstRoundCoin then
+                        Result = self:WaitForFirstCoinTween(Tween, Goal, Coin, Distance, Method.TweenSpeed, Method.CoinTimeout, Method.SkipTime)
+                    else
+                        Result = self:WaitForCoin(Coin, Distance / Method.TweenSpeed + Method.CoinTimeout, Method.SkipTime, true)
+                    end
                     self:CancelTween()
                 end
             else
                 HRP.CFrame = Goal
                 if Method.Type == "Tween" then self.Elevated = false end
+                if IsFirstRoundCoin and self.FirstCoinHopPending then
+                    self.FirstCoinHopPending = false
+                    self:Hop(Goal, Coin)
+                end
                 Result = self:WaitForCoin(Coin, Method.CoinTimeout, Method.SkipTime, false)
+            end
+
+            if IsFirstRoundCoin and Result == true then
+                self.FirstCoinHopPending = false
             end
 
             if Result == true and Method.Delay > 0 then
