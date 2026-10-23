@@ -7,6 +7,7 @@
       Enabled = true,
       ResetOnBagFull = true,
       ReturnToSpawn = true,
+      CoinRank = 1,
       AllowedCoinTypes = { "Coin", "Candy" },
       Method = {
         Type = "Tween",
@@ -17,6 +18,12 @@
         CoinTimeout = 2,
         SkipTime = 5,
         FreezeSettle = 0.1,
+        Hop = {
+          Enabled = true,
+          Count = 2,
+          Height = 2,
+          Delay = 0.05
+        }
       },
       Lobby = {
         Enabled = true,
@@ -25,13 +32,30 @@
       PreRound = {
         Enabled = true,
         Depth = 25
+      },
+      Round = {
+        Innocent = { Enabled = true },
+        Murderer = { Enabled = true },
+        Sheriff = { Enabled = true },
+        Hero = { Enabled = true }
       }
+    },
+    AutoVote = {
+      Enabled = false,
+      Maps = { "Barn", "House 2", 3214477411 }
     },
     Miscellaneous = {
       AntiAFK = true,
       AutoRejoin = true,
       Rendering = true,
       MaxFPS = 60
+    },
+    Webhooks = {
+      Enabled = false,
+      Url = "",
+      PingUserId = "",
+      Cooldown = 5,
+      Events = { "Loaded", "BagFull", "RoundSummary", "Died", "Rejoin", "Stuck", "LowEfficiency", "SessionSummary" }
     }
   }
 ]]
@@ -82,6 +106,22 @@ local function ResetSetting(Value)
     return true
 end
 
+local function ResolveRank(Value)
+    if type(Value) == "function" then
+        local Ok, Result = pcall(Value)
+        Value = Ok and Result or 1
+    elseif type(Value) == "table" then
+        local Min, Max = tonumber(Value[1] or Value.Min), tonumber(Value[2] or Value.Max)
+        if Min and Max then
+            if Min > Max then Min, Max = Max, Min end
+            Value = math.random(math.floor(Min), math.floor(Max))
+        else
+            Value = 1
+        end
+    end
+    return math.max(1, math.floor(tonumber(Value) or 1))
+end
+
 local function Resolve()
     local S = getgenv().Settings
     local Root = Bool(S.Enabled, true)
@@ -89,6 +129,7 @@ local function Resolve()
     local M = Table(AF.Method)
     local L = Table(AF.Lobby)
     local P = Table(AF.PreRound)
+    local R = Table(AF.Round)
     local Misc = Table(S.Miscellaneous)
 
     local Cfg = {
@@ -97,6 +138,7 @@ local function Resolve()
             Enabled = Root and Bool(AF.Enabled, true),
             ResetOnBagFull = ResetSetting(AF.ResetOnBagFull),
             ReturnToSpawn = Bool(AF.ReturnToSpawn, true),
+            CoinRank = AF.CoinRank == nil and 1 or AF.CoinRank,
             AllowedCoinTypes = AF.AllowedCoinTypes,
             Method = {
                 Type = Pick(M.Type, { "Tween", "Teleportation" }, "Tween"),
@@ -107,6 +149,12 @@ local function Resolve()
                 CoinTimeout = Num(M.CoinTimeout, 2, 0.1),
                 SkipTime = Num(M.SkipTime, 5, 0),
                 FreezeSettle = Num(M.FreezeSettle, 0.1, 0),
+                Hop = {
+                    Enabled = Bool(Table(M.Hop).Enabled, true),
+                    Count = math.floor(Num(Table(M.Hop).Count, 2, 1)),
+                    Height = type(Table(M.Hop).Height) == "number" and Table(M.Hop).Height or 2,
+                    Delay = Num(Table(M.Hop).Delay, 0.05, 0),
+                },
             },
             Lobby = {
                 Enabled = Bool(L.Enabled, true),
@@ -115,8 +163,20 @@ local function Resolve()
             PreRound = {
                 Enabled = Bool(P.Enabled, true),
                 Depth = Num(P.Depth, 25, 0)
+            },
+            Round = {
+                Innocent = { Enabled = Bool(Table(R.Innocent).Enabled, true) },
+                Murderer = { Enabled = Bool(Table(R.Murderer).Enabled, true) },
+                Sheriff = { Enabled = Bool(Table(R.Sheriff).Enabled, true) },
+                Hero = { Enabled = Bool(Table(R.Hero).Enabled, true) }
             }
         }
+    }
+
+    local V = Table(S.AutoVote)
+    Cfg.AutoVote = {
+        Enabled = Root and Bool(V.Enabled, false),
+        Maps = Table(V.Maps)
     }
 
     Cfg.Misc = {
@@ -175,7 +235,7 @@ local function IsWebhookEventEnabled(Config, EventName)
     local Value = Events[EventName]
     if type(Value) == "boolean" then return Value end
     if type(Value) == "table" then return Value.Enabled == true end
-    return false
+    return table.find(Events, EventName) ~= nil
 end
 
 local function AddField(Fields, Name, Value, Inline)
@@ -309,77 +369,49 @@ local function SendWebhook(EventName, Title, Description, Fields, OverrideColor,
     local Config = GetWebhookConfig()
     if not Config or not IsWebhookEventEnabled(Config, EventName) then return false end
 
-    local Delivery = Table(Config.Delivery)
-    local EventCooldowns = Table(Delivery.EventCooldowns)
-    local Cooldown = EventCooldowns[EventName]
-    if type(Cooldown) ~= "number" then
-        Cooldown = Num(Delivery.Cooldown, Num(Config.Cooldown, 5, 0), 0)
-    else
-        Cooldown = math.max(0, Cooldown)
-    end
     local Now = os.clock()
     local LastSent = WebhookState.LastEvent[EventName]
-    if not BypassCooldown and LastSent and Now - LastSent < Cooldown then return false end
+    if not BypassCooldown and LastSent and Now - LastSent < Num(Config.Cooldown, 5, 0) then return false end
 
-    local Appearance = Table(Config.Appearance)
     local EmbedFields = {}
     for _, Field in ipairs(Fields or {}) do
         AddField(EmbedFields, Field.name, Field.value, Field.inline)
     end
-    if Appearance.IncludePlayerName ~= false then AddField(EmbedFields, "Player", Player.Name, true) end
-    if Appearance.IncludePlaceId ~= false then AddField(EmbedFields, "Place ID", game.PlaceId, true) end
-    if Appearance.IncludeJobId == true and game.JobId ~= "" then AddField(EmbedFields, "Job ID", game.JobId, false) end
+    AddField(EmbedFields, "Player", Player.Name, true)
 
-    local Color = tonumber(OverrideColor) or tonumber(Table(Appearance.Colors)[EventName]) or WebhookColors[EventName] or 0x5865F2
     local EmbedTitle = tostring(Title or EventName)
     local EmbedDescription = tostring(Description or "")
     local Embed = {
         title = EmbedTitle,
-        color = Color,
-        fields = EmbedFields
+        color = tonumber(OverrideColor) or WebhookColors[EventName] or 0x5865F2,
+        fields = EmbedFields,
+        timestamp = GetIsoTimestamp(),
+        footer = { text = "MM2 AutoFarm" }
     }
     if EmbedDescription ~= "" and NormalizeEmbedText(EmbedDescription) ~= NormalizeEmbedText(EmbedTitle) then
         Embed.description = EmbedDescription
     end
-    if Appearance.IncludeAvatarBust ~= false then
-        local AvatarBustUrl = GetPlayerAvatarBustUrl(Config)
-        if type(AvatarBustUrl) == "string" and string.match(AvatarBustUrl, "^https://") then
-            Embed.thumbnail = { url = AvatarBustUrl }
-        end
-    end
-    if Appearance.Timestamp ~= false then Embed.timestamp = GetIsoTimestamp() end
-    local Footer = Appearance.Footer
-    if Footer == nil then Footer = "MM2 AutoFarm" end
-    if type(Footer) == "string" and Footer ~= "" then Embed.footer = { text = string.sub(Footer, 1, 2048) } end
+    local AvatarUrl = GetPlayerAvatarBustUrl(Config)
+    if AvatarUrl then Embed.thumbnail = { url = AvatarUrl } end
 
     local Payload = {
-        username = type(Config.Username) == "string" and Config.Username ~= "" and Config.Username or "MM2 Farm",
+        username = "MM2 Farm",
         embeds = { Embed },
         allowed_mentions = { parse = {}, users = {}, roles = {} }
     }
-    local CustomWebhookAvatarUrl = Config.AvatarUrl
-    if type(CustomWebhookAvatarUrl) == "string" and string.match(CustomWebhookAvatarUrl, "^https://") then
-        Payload.avatar_url = CustomWebhookAvatarUrl
-    end
-
-    local Mentions = Table(Config.Mentions)
-    local MentionEvents = Table(Mentions.Events)
-    local UserId = type(Config.PingUserId) == "string" and Config.PingUserId or tostring(Config.PingUserId or "")
-    if Mentions.Enabled == true and MentionEvents[EventName] == true and string.match(UserId, "^%d+$") then
+    local UserId = tostring(Config.PingUserId or "")
+    if (EventName == "Died" or EventName == "Stuck") and string.match(UserId, "^%d+$") then
         Payload.content = "<@" .. UserId .. ">"
         Payload.allowed_mentions.users = { UserId }
     end
 
-    local MaxMessagesPerMinute = Num(Delivery.MaxMessagesPerMinute, 8, 0)
-    local RetryCount = math.floor(Num(Delivery.RetryCount, 1, 0))
-    local RetryDelay = Num(Delivery.RetryDelay, 2, 0)
     WebhookState.LastEvent[EventName] = Now
     QueueWebhookRequest({
         Url = Config.Url,
         Payload = Payload,
-        MaxMessagesPerMinute = MaxMessagesPerMinute,
-        RetryCount = RetryCount,
-        RetryDelay = RetryDelay
+        MaxMessagesPerMinute = 8,
+        RetryCount = 1,
+        RetryDelay = 2
     })
     return true
 end
@@ -465,6 +497,14 @@ local function FormatResetSetting(Value)
     return "{ " .. table.concat(Values, ", ") .. " }"
 end
 
+local function FormatCoinRank(Value)
+    if type(Value) == "function" then return "custom" end
+    if type(Value) == "table" then
+        return tostring(Value[1] or Value.Min or 1) .. "-" .. tostring(Value[2] or Value.Max or 1)
+    end
+    return tostring(Value)
+end
+
 local function ResetAllowedForRole(Value, Role)
     if type(Value) == "boolean" then return Value end
     if type(Value) ~= "table" then return true end
@@ -543,6 +583,9 @@ function AutoFarm.New(Player)
     Self.Parked = false
     Self.ParkedChar = nil
     Self.HoldCF = nil
+    Self.Voting = false
+    Self.Roles = {}
+    Self.RoleListeners = {}
     Self.Elevated = false
     Self.GravForce = nil
     Self.CoinChange = 0
@@ -570,50 +613,12 @@ function AutoFarm.New(Player)
 end
 
 function AutoFarm:NotifyLoaded()
-    local Config = GetWebhookConfig()
-    if not Config or not IsWebhookEventEnabled(Config, "Loaded") then return end
-    local Options = GetWebhookEventOptions(Config, "Loaded")
-    local Fields = {}
-    local Cfg = Resolve()
-
-    if Options.IncludeConfiguration ~= false then
-        AddField(Fields, "Global", "```lua\nEnabled = " .. tostring(Cfg.Enabled) .. "\n```", false)
-        if Options.IncludeAutoFarmSettings ~= false then
-            local AF = Cfg.AutoFarm
-            local ResetValue = FormatResetSetting(AF.ResetOnBagFull)
-            AddField(Fields, "AutoFarm", "```lua\nEnabled = " .. tostring(AF.Enabled)
-                .. ",\nResetOnBagFull = " .. ResetValue
-                .. ",\nReturnToSpawn = " .. tostring(AF.ReturnToSpawn)
-                .. ",\nAllowedCoinTypes = " .. FormatCoinTypes(AF.AllowedCoinTypes) .. "\n```", false)
-            AddField(Fields, "Movement", "```lua\nType = \"" .. tostring(AF.Method.Type) .. "\""
-                .. ",\nTweenSpeed = " .. tostring(AF.Method.TweenSpeed)
-                .. ",\nDelay = " .. tostring(AF.Method.Delay)
-                .. ",\nBodyPart = \"" .. tostring(AF.Method.BodyPart) .. "\""
-                .. ",\nOffset = " .. tostring(AF.Method.Offset)
-                .. ",\nCoinTimeout = " .. tostring(AF.Method.CoinTimeout)
-                .. ",\nSkipTime = " .. tostring(AF.Method.SkipTime)
-                .. ",\nFreezeSettle = " .. tostring(AF.Method.FreezeSettle) .. "\n```", false)
-            AddField(Fields, "Lobby / PreRound", "```lua\nLobby = { Enabled = " .. tostring(AF.Lobby.Enabled)
-                .. ", Depth = " .. tostring(AF.Lobby.Depth) .. " }"
-                .. ",\nPreRound = { Enabled = " .. tostring(AF.PreRound.Enabled)
-                .. ", Depth = " .. tostring(AF.PreRound.Depth) .. " }\n```", false)
-        end
-        if Options.IncludeMiscSettings ~= false then
-            AddField(Fields, "Miscellaneous", "```lua\nAntiAFK = " .. tostring(Cfg.Misc.AntiAFK)
-                .. ",\nAutoRejoin = " .. tostring(Cfg.Misc.AutoRejoin)
-                .. ",\nRendering = " .. tostring(Cfg.Misc.Rendering)
-                .. ",\nMaxFPS = " .. tostring(Cfg.Misc.MaxFPS) .. "\n```", false)
-        end
-        local WebhookEvents = {}
-        for Name, Value in pairs(Table(Config.Events)) do
-            local IsEnabled = type(Value) == "boolean" and Value or (type(Value) == "table" and Value.Enabled == true)
-            if IsEnabled then table.insert(WebhookEvents, tostring(Name)) end
-        end
-        table.sort(WebhookEvents)
-        AddField(Fields, "Enabled Webhook Events", #WebhookEvents > 0 and table.concat(WebhookEvents, ", ") or "None", false)
-    end
-
-    SendWebhook("Loaded", "Script Initialized", "Script initialized! Configuration loaded below.", Fields)
+    local AF = Resolve().AutoFarm
+    SendWebhook("Loaded", "Script Initialized", nil, {
+        { name = "Method", value = AF.Method.Type .. " (" .. tostring(AF.Method.TweenSpeed) .. ")", inline = true },
+        { name = "Coin Rank", value = FormatCoinRank(AF.CoinRank), inline = true },
+        { name = "Reset On Full", value = FormatResetSetting(AF.ResetOnBagFull), inline = true }
+    })
 end
 
 function AutoFarm:BeginRound(Notify)
@@ -627,7 +632,7 @@ function AutoFarm:BeginRound(Notify)
     end
     self.RoundNumber += 1
     self.RoundStartedAt = os.clock()
-    self.FirstCoinHopPending = true
+    self.FirstCoinHopPending = Resolve().AutoFarm.Method.Hop.Enabled
     self.RoundStats = NewStats()
     self.RoundActive = true
     self.RoundReported = false
@@ -895,6 +900,7 @@ end
 
 function AutoFarm:CanFarm(Cfg)
     return Cfg.AutoFarm.Enabled
+        and self:IsRoleEnabled(Cfg)
         and self.RoundActive
         and not self.BagFull
         and not self.Respawning
@@ -1117,14 +1123,103 @@ function AutoFarm:HookDeath()
     end))
 end
 
-function AutoFarm:GetRole()
-    local Ok, Role = pcall(function()
-        local CRC = require(game:GetService("ReplicatedStorage").Modules.CurrentRoundClient)
-        local Data = CRC.GetLatestPlayerData()
-        local MyData = Data and Data[self.Player.Name]
-        return MyData and MyData.Role
+local CRCModule
+
+local function GetCRC()
+    if CRCModule then return CRCModule end
+    local Ok, Module = pcall(function()
+        return require(game:GetService("ReplicatedStorage").Modules.CurrentRoundClient)
     end)
-    return Ok and Role or nil
+    if Ok then CRCModule = Module end
+    return CRCModule
+end
+
+local function GetRoundData()
+    local CRC = GetCRC()
+    if not CRC then return nil end
+    local Ok, Data = pcall(CRC.GetLatestPlayerData)
+    if Ok and type(Data) == "table" then return Data end
+    return nil
+end
+
+function AutoFarm:GetRole(Target)
+    local Name = Target or self.Player.Name
+    if typeof(Name) == "Instance" then Name = Name.Name end
+    local Data = GetRoundData()
+    local Info = Data and Data[Name]
+    if type(Info) == "table" and type(Info.Role) == "string" then return Info.Role end
+    return nil
+end
+
+function AutoFarm:GetRoles()
+    local Roles = {}
+    for Name, Info in pairs(GetRoundData() or {}) do
+        if type(Info) == "table" and type(Info.Role) == "string" then
+            Roles[Name] = Info.Role
+        end
+    end
+    return Roles
+end
+
+function AutoFarm:GetPlayersWithRole(Role)
+    local Names = {}
+    for Name, PlayerRole in pairs(self:GetRoles()) do
+        if PlayerRole == Role then table.insert(Names, Name) end
+    end
+    table.sort(Names)
+    return Names
+end
+
+function AutoFarm:IsRole(Role, Target)
+    return self:GetRole(Target) == Role
+end
+
+function AutoFarm:IsRoleEnabled(Cfg)
+    local Role = self:GetRole()
+    local Entry = Role and Cfg.AutoFarm.Round[Role]
+    return Entry == nil or Entry.Enabled
+end
+
+function AutoFarm:OnRoleChanged(Callback)
+    table.insert(self.RoleListeners, Callback)
+    return function()
+        local Index = table.find(self.RoleListeners, Callback)
+        if Index then table.remove(self.RoleListeners, Index) end
+    end
+end
+
+function AutoFarm:RefreshRoles()
+    local Old = self.Roles
+    local New = self:GetRoles()
+    self.Roles = New
+    local Changes = {}
+    for Name, Role in pairs(New) do
+        if Old[Name] ~= Role then table.insert(Changes, { Name, Role, Old[Name] }) end
+    end
+    for Name, Role in pairs(Old) do
+        if New[Name] == nil then table.insert(Changes, { Name, nil, Role }) end
+    end
+    for _, Change in ipairs(Changes) do
+        for _, Listener in ipairs(table.clone(self.RoleListeners)) do
+            task.spawn(Listener, Change[1], Change[2], Change[3])
+        end
+    end
+end
+
+function AutoFarm:HookRoles()
+    local CRC = GetCRC()
+    if CRC then
+        self:AddConnection(CRC.PlayerDataChanged.Event:Connect(function()
+            self:RefreshRoles()
+        end))
+    end
+    self:AddConnection(Gameplay.RoleSelect.OnClientEvent:Connect(function()
+        task.defer(function() self:RefreshRoles() end)
+    end))
+    self:AddConnection(Gameplay.RoundStart.OnClientEvent:Connect(function()
+        task.defer(function() self:RefreshRoles() end)
+    end))
+    self:RefreshRoles()
 end
 
 function AutoFarm:ShouldReset(Value)
@@ -1219,12 +1314,12 @@ function AutoFarm:DetectRounds()
     end))
 end
 
-function AutoFarm:GetNearestCoin(Cfg)
+function AutoFarm:GetNearestCoin(Cfg, ForceRank)
     local HRP = GetHRP(self)
     if not HRP then return nil end
     local Allowed = Cfg.AutoFarm.AllowedCoinTypes
     local Now = os.clock()
-    local Closest, Dist = nil, math.huge
+    local List = {}
     for _, Obj in pairs(workspace:GetChildren()) do
         local Container = Obj:FindFirstChild("CoinContainer")
         if Container then
@@ -1234,16 +1329,15 @@ function AutoFarm:GetNearestCoin(Cfg)
                 if (not SkipUntil or Now >= SkipUntil)
                     and IsCoinTypeAllowed(Allowed, Coin:GetAttribute("CoinID"))
                     and Coin:FindFirstChild("TouchInterest") then
-                    local D = (HRP.Position - Coin.Position).Magnitude
-                    if D < Dist then
-                        Closest = Coin
-                        Dist = D
-                    end
+                    table.insert(List, { Coin = Coin, Dist = (HRP.Position - Coin.Position).Magnitude })
                 end
             end
         end
     end
-    return Closest
+    if #List == 0 then return nil end
+    table.sort(List, function(A, B) return A.Dist < B.Dist end)
+    local Rank = math.min(ForceRank or ResolveRank(Cfg.AutoFarm.CoinRank), #List)
+    return List[Rank].Coin
 end
 
 function AutoFarm:GetBodyPart(Name)
@@ -1304,10 +1398,10 @@ function AutoFarm:WaitForCoin(Coin, Timeout, SkipTime, Retarget)
         if not Coin.Parent or not Coin:FindFirstChild("TouchInterest") then return true end
         local Cfg = Resolve()
         if not self:CanFarm(Cfg) then return false end
-        if Retarget and self.CoinChange ~= Seen then
+        if Retarget and Cfg.AutoFarm.CoinRank == 1 and self.CoinChange ~= Seen then
             Seen = self.CoinChange
             local HRP = GetHRP(self)
-            local Best = HRP and self:GetNearestCoin(Cfg)
+            local Best = HRP and self:GetNearestCoin(Cfg, 1)
             if Best and Best ~= Coin
                 and (HRP.Position - Best.Position).Magnitude + 1 < (HRP.Position - Coin.Position).Magnitude then
                 return "retarget"
@@ -1319,13 +1413,14 @@ function AutoFarm:WaitForCoin(Coin, Timeout, SkipTime, Retarget)
 end
 
 function AutoFarm:Hop(Goal, Coin)
-    for _ = 1, 2 do
-        for _, Height in ipairs({ 2, 0 }) do
+    local Hop = Resolve().AutoFarm.Method.Hop
+    for _ = 1, Hop.Count do
+        for _, Height in ipairs({ Hop.Height, 0 }) do
             local HRP = GetHRP(self)
             if not HRP or not Coin.Parent or not Coin:FindFirstChild("TouchInterest") then return end
             if not self:CanFarm(Resolve()) then return end
             HRP.CFrame = Goal + Vector3.new(0, Height, 0)
-            task.wait(0.05)
+            task.wait(Hop.Delay)
         end
     end
 end
@@ -1351,10 +1446,10 @@ function AutoFarm:WaitForFirstCoinTween(Tween, Goal, Coin, Distance, Speed, Time
             return self:WaitForCoin(Coin, Timeout, SkipTime, false)
         end
 
-        if self.CoinChange ~= Seen then
+        if Cfg.AutoFarm.CoinRank == 1 and self.CoinChange ~= Seen then
             Seen = self.CoinChange
             local HRP = GetHRP(self)
-            local Best = HRP and self:GetNearestCoin(Cfg)
+            local Best = HRP and self:GetNearestCoin(Cfg, 1)
             if Best and Best ~= Coin
                 and (HRP.Position - Best.Position).Magnitude + 1 < (HRP.Position - Coin.Position).Magnitude then
                 return "retarget"
@@ -1461,7 +1556,9 @@ function AutoFarm:StartFarmingLoop()
             if setfpscap then setfpscap(Cfg.Misc.MaxFPS) end
 
             if not self:CanFarm(Cfg) then
-                if self:WaitingForRound(Cfg) then
+                if self.Voting then
+                    self:Release()
+                elseif self:WaitingForRound(Cfg) then
                     if self.PreRound and self.SpawnPos and Cfg.AutoFarm.PreRound.Enabled then
                         self:ParkUnderSpawn(Cfg)
                     elseif Cfg.AutoFarm.Lobby.Enabled then
@@ -1548,15 +1645,122 @@ function AutoFarm:StartFarmingLoop()
     end)
 end
 
+local function ParseMapId(Value)
+    if type(Value) == "number" then return Value end
+    if type(Value) ~= "string" then return nil end
+    local Text = tostring(Value)
+    return tonumber(string.match(Text, "^%s*rbxassetid://(%d+)%s*$") or string.match(Text, "^%s*(%d+)%s*$"))
+end
+
+function AutoFarm:GetVotePads()
+    local Lobby = workspace:FindFirstChild("Lobby")
+    local Pads = Lobby and Lobby:FindFirstChild("VotePads")
+    local List = {}
+    if not Pads then return List end
+    for _, Model in ipairs(Pads:GetChildren()) do
+        local Pad = Model:FindFirstChild("Pad")
+        local Info = Model:FindFirstChild("VoteInfoGui")
+        local Container = Info and Info:FindFirstChild("Container")
+        local MapInfo = Model:FindFirstChild("MapInfoGui")
+        local Name = Container and Container:FindFirstChild("MapName")
+        local Votes = Container and Container:FindFirstChild("Votes")
+        local Icon = MapInfo and MapInfo:FindFirstChild("MapIcon")
+        if Pad and Name and Votes and Icon then
+            table.insert(List, { Pad = Pad, Name = Name, Votes = Votes, Icon = Icon })
+        end
+    end
+    return List
+end
+
+function AutoFarm:IsVoteOpen()
+    for _, Entry in ipairs(self:GetVotePads()) do
+        if Entry.Icon.Image ~= "" then return true end
+    end
+    return false
+end
+
+function AutoFarm:FindVoteTarget(Wanted)
+    local Pads = self:GetVotePads()
+    for _, Want in ipairs(Wanted) do
+        local WantName = type(Want) == "string" and string.lower(string.match(Want, "^%s*(.-)%s*$")) or nil
+        local WantId = ParseMapId(Want)
+        for _, Entry in ipairs(Pads) do
+            if Entry.Icon.Image ~= "" then
+                local PadName = string.lower(string.match(Entry.Name.Text, "^%s*(.-)%s*$"))
+                local PadId = tonumber(string.match(Entry.Icon.Image, "%d+"))
+                if (WantName and PadName == WantName) or (WantId and PadId == WantId) then
+                    return Entry
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function VoteCount(Entry)
+    return tonumber(string.match(Entry.Votes.Text, "%d+")) or 0
+end
+
+function AutoFarm:CastVote(Entry)
+    local HRP = GetHRP(self)
+    if not HRP then return end
+    local Before = VoteCount(Entry)
+    HRP.AssemblyLinearVelocity = Vector3.zero
+    HRP.CFrame = Entry.Pad.CFrame + Vector3.new(0, 3, 0)
+    local End = os.clock() + 1
+    repeat
+        task.wait()
+    until VoteCount(Entry) > Before or os.clock() >= End or not self:IsVoteOpen()
+end
+
+function AutoFarm:ResetForVote()
+    local Old = GetCharacter(self)
+    local Hum = GetHumanoid(self)
+    if Hum then
+        Hum:ChangeState(Enum.HumanoidStateType.Dead)
+    elseif Old then
+        Old:BreakJoints()
+    end
+    local End = os.clock() + 10
+    repeat
+        task.wait()
+    until (GetCharacter(self) ~= Old and GetHRP(self) and GetHumanoid(self)) or os.clock() >= End or not self:IsVoteOpen()
+end
+
+function AutoFarm:StartVoteLoop()
+    task.spawn(function()
+        while true do
+            task.wait(0.2)
+            if Resolve().AutoVote.Enabled and not self.RoundActive and self:IsVoteOpen() then
+                self.Voting = true
+                self:Release()
+                while self:IsVoteOpen() do
+                    local Vote = Resolve().AutoVote
+                    if not Vote.Enabled then break end
+                    local Entry = self:FindVoteTarget(Vote.Maps)
+                    if not Entry then break end
+                    self:CastVote(Entry)
+                    if not self:IsVoteOpen() then break end
+                    self:ResetForVote()
+                end
+                self.Voting = false
+                repeat task.wait(0.2) until not self:IsVoteOpen()
+            end
+        end
+    end)
+end
+
 function AutoFarm:Load()
     local Farm = AutoFarm.New(Player)
     getgenv()._Farm = Farm
     Farm:HookPhysics()
     Farm:HookPreRound()
     Farm:HookDeath()
+    Farm:HookRoles()
     Farm:DetectCoins()
     Farm:DetectRounds()
     Farm:StartFarmingLoop()
+    Farm:StartVoteLoop()
     local WebhookConfig = GetWebhookConfig()
     if WebhookConfig and IsWebhookEventEnabled(WebhookConfig, "Stuck") then
         Farm:StartStuckMonitor()
