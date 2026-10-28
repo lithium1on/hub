@@ -74,6 +74,7 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 
 local Player = game.Players.LocalPlayer
+local CurrentJobId = game.JobId
 local Gameplay = game:GetService("ReplicatedStorage").Remotes.Gameplay
 
 local function Bool(Value, Default)
@@ -562,7 +563,7 @@ GuiService.ErrorMessageChanged:Connect(function(ErrorMessage)
             end
         end
         task.wait()
-        TeleportService:Teleport(game.PlaceId, Player)
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, CurrentJobId, Player)
     end
 end)
 
