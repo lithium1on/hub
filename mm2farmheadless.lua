@@ -18,12 +18,7 @@
         CoinTimeout = 2,
         SkipTime = 5,
         FreezeSettle = 0.1,
-        Hop = {
-          Enabled = true,
-          Count = 2,
-          Height = 2,
-          Delay = 0.05
-        }
+        Rotation = 0
       },
       Lobby = {
         Enabled = true,
@@ -123,6 +118,21 @@ local function ResolveRank(Value)
     return math.max(1, math.floor(tonumber(Value) or 1))
 end
 
+-- Rotation is given in degrees. A number tilts the player around the X axis
+-- (-90 = face down, 90 = face up); a table gives { X, Y, Z } angles.
+local function ResolveRotation(Value)
+    if type(Value) == "number" then
+        return Vector3.new(Value, 0, 0)
+    elseif type(Value) == "table" then
+        return Vector3.new(
+            tonumber(Value.X or Value.x or Value[1]) or 0,
+            tonumber(Value.Y or Value.y or Value[2]) or 0,
+            tonumber(Value.Z or Value.z or Value[3]) or 0
+        )
+    end
+    return Vector3.zero
+end
+
 local function Resolve()
     local S = getgenv().Settings
     local Root = Bool(S.Enabled, true)
@@ -133,6 +143,8 @@ local function Resolve()
     local R = Table(AF.Round)
     local Misc = Table(S.Miscellaneous)
 
+    local MethodType = Pick(M.Type, { "Tween", "Teleportation" }, "Tween")
+
     local Cfg = {
         Enabled = Root,
         AutoFarm = {
@@ -142,7 +154,7 @@ local function Resolve()
             CoinRank = AF.CoinRank == nil and 1 or AF.CoinRank,
             AllowedCoinTypes = AF.AllowedCoinTypes,
             Method = {
-                Type = Pick(M.Type, { "Tween", "Teleportation" }, "Tween"),
+                Type = MethodType,
                 TweenSpeed = Num(M.TweenSpeed, 25, 0.01),
                 Delay = Num(M.Delay, 0, 0),
                 BodyPart = Pick(M.BodyPart, { "HipHeight", "Torso", "Head" }, "HipHeight"),
@@ -150,12 +162,7 @@ local function Resolve()
                 CoinTimeout = Num(M.CoinTimeout, 2, 0.1),
                 SkipTime = Num(M.SkipTime, 5, 0),
                 FreezeSettle = Num(M.FreezeSettle, 0.1, 0),
-                Hop = {
-                    Enabled = Bool(Table(M.Hop).Enabled, true),
-                    Count = math.floor(Num(Table(M.Hop).Count, 2, 1)),
-                    Height = type(Table(M.Hop).Height) == "number" and Table(M.Hop).Height or 2,
-                    Delay = Num(Table(M.Hop).Delay, 0.05, 0),
-                },
+                Rotation = ResolveRotation(M.Rotation)
             },
             Lobby = {
                 Enabled = Bool(L.Enabled, true),
@@ -594,7 +601,6 @@ function AutoFarm.New(Player)
     Self.SpawnPos = nil
     Self.SessionStartedAt = os.clock()
     Self.RoundStartedAt = nil
-    Self.FirstCoinHopPending = false
     Self.RoundNumber = 0
     Self.CompletedRounds = 0
     Self.RoundReported = true
@@ -633,7 +639,6 @@ function AutoFarm:BeginRound(Notify)
     end
     self.RoundNumber += 1
     self.RoundStartedAt = os.clock()
-    self.FirstCoinHopPending = Resolve().AutoFarm.Method.Hop.Enabled
     self.RoundStats = NewStats()
     self.RoundActive = true
     self.RoundReported = false
@@ -709,7 +714,6 @@ function AutoFarm:EvaluateLowEfficiency(Stats)
 end
 
 function AutoFarm:FinishRound()
-    self.FirstCoinHopPending = false
     if not self.RoundActive or self.RoundReported then
         self.RoundActive = false
         self.PreRound = false
@@ -919,6 +923,17 @@ local function UprightRotation(HRP)
     local Flat = Vector3.new(Look.X, 0, Look.Z)
     if Flat.Magnitude < 0.01 then Flat = Vector3.new(0, 0, -1) end
     return CFrame.lookAt(Vector3.zero, Flat.Unit)
+end
+
+-- Base rotation used while farming. With no Rotation configured this is the
+-- normal upright facing; otherwise the configured angles are applied on top of
+-- a fixed facing so the pose stays stable even when the player is lying down
+-- (a lying player has no usable "flat" look direction to derive a yaw from).
+local function FarmRotation(HRP, Angles)
+    if Angles.X == 0 and Angles.Y == 0 and Angles.Z == 0 then
+        return UprightRotation(HRP)
+    end
+    return CFrame.Angles(math.rad(Angles.X), math.rad(Angles.Y), math.rad(Angles.Z))
 end
 
 function AutoFarm:Anchor()
@@ -1352,9 +1367,9 @@ function AutoFarm:GetBodyPart(Name)
     return nil
 end
 
-function AutoFarm:GetGoal(Coin, HRP, Hum, BodyPart, Offset)
+function AutoFarm:GetGoal(Coin, HRP, Hum, BodyPart, Offset, Angles)
     local Target = Coin.Position + Vector3.new(0, Offset, 0)
-    local Rot = UprightRotation(HRP)
+    local Rot = FarmRotation(HRP, Angles)
     local Part = self:GetBodyPart(BodyPart)
     if not Part then
         return CFrame.new(Target.X, Target.Y + Hum.HipHeight, Target.Z) * Rot
@@ -1378,6 +1393,19 @@ function AutoFarm:TweenTo(Goal, Distance, Speed)
     return Tween
 end
 
+-- Forces a coin grab. Only done once the player is at the coin; touching from far away gets kicked.
+function AutoFarm:TouchCoin(Coin)
+    local HRP = GetHRP(self)
+    if typeof(firetouchinterest) ~= "function" then return false end
+    if not HRP or not Coin or not Coin.Parent or not Coin:FindFirstChild("TouchInterest") then return false end
+    if (HRP.Position - Coin.Position).Magnitude > 12 then return false end
+    local Ok = pcall(function()
+        firetouchinterest(HRP, Coin, 0)
+        firetouchinterest(HRP, Coin, 1)
+    end)
+    return Ok
+end
+
 function AutoFarm:WatchContainer(Container)
     if self.Watched[Container] then return end
     self.Watched[Container] = true
@@ -1394,11 +1422,17 @@ end
 function AutoFarm:WaitForCoin(Coin, Timeout, SkipTime, Retarget)
     local End = os.clock() + Timeout
     local Seen = self.CoinChange
+    local Fired = false
     repeat
         task.wait()
         if not Coin.Parent or not Coin:FindFirstChild("TouchInterest") then return true end
         local Cfg = Resolve()
         if not self:CanFarm(Cfg) then return false end
+        -- Arrived (teleport has no tween; tween has finished): force the grab once.
+        if not Fired and (not self.CurrentTween or self.CurrentTween.PlaybackState == Enum.PlaybackState.Completed) then
+            Fired = true
+            self:TouchCoin(Coin)
+        end
         if Retarget and Cfg.AutoFarm.CoinRank == 1 and self.CoinChange ~= Seen then
             Seen = self.CoinChange
             local HRP = GetHRP(self)
@@ -1409,55 +1443,6 @@ function AutoFarm:WaitForCoin(Coin, Timeout, SkipTime, Retarget)
             end
         end
     until os.clock() >= End
-    self.Skip[Coin] = os.clock() + SkipTime
-    return false
-end
-
-function AutoFarm:Hop(Goal, Coin)
-    local Hop = Resolve().AutoFarm.Method.Hop
-    for _ = 1, Hop.Count do
-        for _, Height in ipairs({ Hop.Height, 0 }) do
-            local HRP = GetHRP(self)
-            if not HRP or not Coin.Parent or not Coin:FindFirstChild("TouchInterest") then return end
-            if not self:CanFarm(Resolve()) then return end
-            HRP.CFrame = Goal + Vector3.new(0, Height, 0)
-            task.wait(Hop.Delay)
-        end
-    end
-end
-
-function AutoFarm:WaitForFirstCoinTween(Tween, Goal, Coin, Distance, Speed, Timeout, SkipTime)
-    local End = os.clock() + Distance / Speed + Timeout
-    local Seen = self.CoinChange
-
-    while os.clock() < End do
-        task.wait()
-
-        if not Coin.Parent or not Coin:FindFirstChild("TouchInterest") then
-            self.FirstCoinHopPending = false
-            return true
-        end
-
-        local Cfg = Resolve()
-        if not self:CanFarm(Cfg) then return false end
-
-        if Tween.PlaybackState == Enum.PlaybackState.Completed then
-            self.FirstCoinHopPending = false
-            self:Hop(Goal, Coin)
-            return self:WaitForCoin(Coin, Timeout, SkipTime, false)
-        end
-
-        if Cfg.AutoFarm.CoinRank == 1 and self.CoinChange ~= Seen then
-            Seen = self.CoinChange
-            local HRP = GetHRP(self)
-            local Best = HRP and self:GetNearestCoin(Cfg, 1)
-            if Best and Best ~= Coin
-                and (HRP.Position - Best.Position).Magnitude + 1 < (HRP.Position - Coin.Position).Magnitude then
-                return "retarget"
-            end
-        end
-    end
-
     self.Skip[Coin] = os.clock() + SkipTime
     return false
 end
@@ -1592,7 +1577,7 @@ function AutoFarm:StartFarmingLoop()
                 self.HoldCF = nil
             end
 
-            local Goal = self:GetGoal(Coin, HRP, Hum, Method.BodyPart, Method.Offset)
+            local Goal = self:GetGoal(Coin, HRP, Hum, Method.BodyPart, Method.Offset, Method.Rotation)
             local Result = false
             local Teleport = Method.Type ~= "Tween" or self.Elevated
 
@@ -1608,35 +1593,21 @@ function AutoFarm:StartFarmingLoop()
                 HRP = GetHRP(self)
                 Hum = GetHumanoid(self)
                 if not HRP or not Hum then continue end
-                Goal = self:GetGoal(Coin, HRP, Hum, Method.BodyPart, Method.Offset)
+                Goal = self:GetGoal(Coin, HRP, Hum, Method.BodyPart, Method.Offset, Method.Rotation)
             end
-
-            local IsFirstRoundCoin = self.FirstCoinHopPending
 
             if not Teleport then
                 HRP.CFrame = CFrame.new(HRP.Position) * Goal.Rotation
                 local Distance = (Goal.Position - HRP.Position).Magnitude
                 local Tween = self:TweenTo(Goal, Distance, Method.TweenSpeed)
                 if Tween then
-                    if IsFirstRoundCoin then
-                        Result = self:WaitForFirstCoinTween(Tween, Goal, Coin, Distance, Method.TweenSpeed, Method.CoinTimeout, Method.SkipTime)
-                    else
-                        Result = self:WaitForCoin(Coin, Distance / Method.TweenSpeed + Method.CoinTimeout, Method.SkipTime, true)
-                    end
+                    Result = self:WaitForCoin(Coin, Distance / Method.TweenSpeed + Method.CoinTimeout, Method.SkipTime, true)
                     self:CancelTween()
                 end
             else
                 HRP.CFrame = Goal
                 if Method.Type == "Tween" then self.Elevated = false end
-                if IsFirstRoundCoin and self.FirstCoinHopPending then
-                    self.FirstCoinHopPending = false
-                    self:Hop(Goal, Coin)
-                end
                 Result = self:WaitForCoin(Coin, Method.CoinTimeout, Method.SkipTime, false)
-            end
-
-            if IsFirstRoundCoin and Result == true then
-                self.FirstCoinHopPending = false
             end
 
             if Result == true and Method.Delay > 0 then
