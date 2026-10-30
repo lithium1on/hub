@@ -27,14 +27,17 @@
     drawElementsInstanced: gl.drawElementsInstanced
   };
   const bufferCache = new WeakMap();
-  const lastCapture = new Map();
   const boxes = new Map();
   const programIds = new WeakMap();
   const programSkinningCache = new WeakMap();
   const objectIds = new WeakMap();
   let nextProgramId = 1;
   let nextObjectId = 1;
-  let lastGlobalCapture = 0;
+  let frameSerial = 0;
+  let raf = 0;
+  const seenThisFrame = new Set();
+  const rigFrameSerial = new Map();
+  const uniformFrameCache = new Map();
   let active = true;
   let overlay = null;
   let captured = 0;
@@ -113,7 +116,13 @@
       const buffer = gl.getIndexedParameter(gl.UNIFORM_BUFFER_BINDING, binding);
       const start = gl.getIndexedParameter(gl.UNIFORM_BUFFER_START, binding);
       if (!buffer) throw new Error("No buffer bound for " + wantedName);
-      return { bytes: readRange(buffer, start, size), size, start };
+      const cacheKey = objectId(buffer) + ":" + start + ":" + size;
+      let bytes = uniformFrameCache.get(cacheKey);
+      if (!bytes) {
+        bytes = readRange(buffer, start, size);
+        uniformFrameCache.set(cacheKey, bytes);
+      }
+      return { bytes, size, start, buffer };
     }
     throw new Error("Missing uniform block " + wantedName);
   }
@@ -171,36 +180,21 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.strokeStyle = "#20e060";
     ctx.lineWidth = Math.max(1.5, canvas.width / 900);
-
-    // Merge only when new bounds arrive, never once per animation frame.
-    const merged = [];
     for (const item of boxes.values()) {
-      let r = { x: item.x, y: item.y, right: item.x + item.w, bottom: item.y + item.h };
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (let i = merged.length - 1; i >= 0; i--) {
-          const m = merged[i], pad = 28;
-          if (r.x <= m.right + pad && r.right >= m.x - pad &&
-              r.y <= m.bottom + pad && r.bottom >= m.y - pad) {
-            r = { x: Math.min(r.x, m.x), y: Math.min(r.y, m.y),
-              right: Math.max(r.right, m.right), bottom: Math.max(r.bottom, m.bottom) };
-            merged.splice(i, 1);
-            changed = true;
-          }
-        }
-      }
-      merged.push(r);
-    }
-    for (const r of merged) {
-      ctx.strokeRect(r.x, r.y, r.right - r.x, r.bottom - r.y);
+      ctx.strokeRect(item.x, item.y, item.w, item.h);
     }
   }
 
-  function calculateBounds(program, count, type, indexOffset, indexBuffer) {
-    const pos = getAttribute(program, "POSITION");
-    const boneIds = getAttribute(program, "TEXCOORD4");
-    const boneWeights = getAttribute(program, "TEXCOORD5");
+  function animationTick() {
+    if (!active) return;
+    animationTick();
+    frameSerial++;
+    seenThisFrame.clear();
+    uniformFrameCache.clear();
+    raf = requestAnimationFrame(animationTick);
+  }
+
+  function calculateBounds(count, type, indexOffset, indexBuffer, pos, boneIds, boneWeights, camera, bones) {
     if (!pos.enabled || !boneIds.enabled || !boneWeights.enabled) {
       throw new Error("A required skinning attribute is disabled");
     }
@@ -213,8 +207,6 @@
       throw new Error("Bone indices and weights are not in the same buffer");
     }
 
-    const camera = getBlock(program, "block_CB0");
-    const bones = getBlock(program, "block_CB1");
     const cam = new Float32Array(camera.bytes.buffer, camera.bytes.byteOffset,
       Math.floor(camera.bytes.byteLength / 4));
     const bmat = new Float32Array(bones.bytes.buffer, bones.bytes.byteOffset,
@@ -241,9 +233,12 @@
     const viewport = gl.getParameter(gl.VIEWPORT);
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let visible = 0;
+    const visited = new Uint8Array(Math.ceil(pos.bytes.length / (pos.stride || 12)));
 
     for (let i = 0; i < indices.length; i++) {
       const vi = indices[i];
+      if (vi >= visited.length || visited[vi]) continue;
+      visited[vi] = 1;
       const po = pos.offset + vi * (pos.stride || 12);
       const bo = boneIds.offset + vi * (boneIds.stride || 4);
       const wo = boneWeights.offset + vi * (boneWeights.stride || 4);
@@ -253,23 +248,19 @@
       const px = pView.getFloat32(po, true);
       const py = pView.getFloat32(po + 4, true);
       const pz = pView.getFloat32(po + 8, true);
-      const ids = [bView.getUint8(bo), bView.getUint8(bo + 1),
-                   bView.getUint8(bo + 2), bView.getUint8(bo + 3)];
-      const weights = [wView.getUint8(wo) / 255, wView.getUint8(wo + 1) / 255,
-                       wView.getUint8(wo + 2) / 255, wView.getUint8(wo + 3) / 255];
-
       let sx = 0, sy = 0, sz = 0;
       for (let j = 0; j < 4; j++) {
-        const base = ids[j] * 12;
+        const boneIndex = bView.getUint8(bo + j);
+        const weight = wView.getUint8(wo + j) * (1 / 255);
+        if (weight === 0) continue;
+        const base = boneIndex * 12;
         if (base + 11 >= bmat.length) continue;
-        const weight = weights[j];
-        const d = px * bmat[base] + py * bmat[base + 1] +
-                  pz * bmat[base + 2] + bmat[base + 3];
-        const e = px * bmat[base + 4] + py * bmat[base + 5] +
-                  pz * bmat[base + 6] + bmat[base + 7];
-        const f = px * bmat[base + 8] + py * bmat[base + 9] +
-                  pz * bmat[base + 10] + bmat[base + 11];
-        sx += d * weight; sy += e * weight; sz += f * weight;
+        sx += (px * bmat[base] + py * bmat[base + 1] +
+          pz * bmat[base + 2] + bmat[base + 3]) * weight;
+        sy += (px * bmat[base + 4] + py * bmat[base + 5] +
+          pz * bmat[base + 6] + bmat[base + 7]) * weight;
+        sz += (px * bmat[base + 8] + py * bmat[base + 9] +
+          pz * bmat[base + 10] + bmat[base + 11]) * weight;
       }
 
       // GLSL mat4(CB0[0], CB0[1], CB0[2], CB0[3]) uses four column vectors.
@@ -300,34 +291,60 @@
     if (!program || !hasSkinningAttributes(program)) return;
     if (instanced) { skipped++; return; }
 
-    const count = args[1], type = args[2], offset = args[3];
+    const count = args[1], type = args[2], indexOffset = args[3];
     const viewport = Array.from(gl.getParameter(gl.VIEWPORT));
-    // Ignore shadow/offscreen passes: only capture the viewport matching the visible canvas.
     if (viewport[0] !== 0 || viewport[1] !== 0 ||
         viewport[2] !== gl.drawingBufferWidth || viewport[3] !== gl.drawingBufferHeight) return;
-    const indexBuffer = gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING);
-    let programId = programIds.get(program);
-    if (!programId) { programId = nextProgramId++; programIds.set(program, programId); }
-    const posLoc = gl.getAttribLocation(program, "POSITION");
-    const boneLoc = gl.getAttribLocation(program, "TEXCOORD4");
-    const posBuffer = gl.getVertexAttrib(posLoc, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
-    const boneBuffer = gl.getVertexAttrib(boneLoc, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
-    const key = [programId, objectId(posBuffer), objectId(boneBuffer),
-      objectId(indexBuffer), viewport.join(","), count, type, offset,
-      gl.getVertexAttribOffset(posLoc, gl.VERTEX_ATTRIB_ARRAY_POINTER)].join(":");
-    const t = now();
-    if (t - lastGlobalCapture < 180) return;
-    if (t - (lastCapture.get(key) || 0) < 1200) return;
-    lastGlobalCapture = t;
-    lastCapture.set(key, t);
 
     try {
-      const bounds = calculateBounds(program, count, type, offset, indexBuffer);
-      if (bounds && bounds.w > 1 && bounds.h > 1) {
-        boxes.set(key, bounds);
-        if (boxes.size > 160) boxes.delete(boxes.keys().next().value);
-        captured++;
-        renderOverlay();
+      const pos = getAttribute(program, "POSITION");
+      const boneIds = getAttribute(program, "TEXCOORD4");
+      const boneWeights = getAttribute(program, "TEXCOORD5");
+      const indexBuffer = gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING);
+      const camera = getBlock(program, "block_CB0");
+      const bones = getBlock(program, "block_CB1");
+
+      const rigKey = objectId(bones.buffer) + ":" + bones.start;
+      // Geometry identity excludes shader/program so material passes cannot
+      // create duplicate boxes for the same mesh.
+      const meshKey = [
+        rigKey,
+        objectId(pos.buffer), pos.offset, pos.stride,
+        objectId(boneIds.buffer), boneIds.offset, boneIds.stride,
+        objectId(boneWeights.buffer), boneWeights.offset, boneWeights.stride,
+        objectId(indexBuffer), count, type, indexOffset
+      ].join(":");
+      if (seenThisFrame.has(meshKey)) return;
+      seenThisFrame.add(meshKey);
+
+      const bounds = calculateBounds(
+        count, type, indexOffset, indexBuffer,
+        pos, boneIds, boneWeights, camera, bones
+      );
+      if (!bounds || bounds.w <= 1 || bounds.h <= 1) return;
+
+      // All body-part draw calls using the same bone UBO range are one rig.
+      // Union their bounds in the current frame, producing one full-body box.
+      if (rigFrameSerial.get(rigKey) !== frameSerial) {
+        boxes.set(rigKey, bounds);
+        rigFrameSerial.set(rigKey, frameSerial);
+      } else {
+        const old = boxes.get(rigKey);
+        if (old) {
+          const x1 = Math.min(old.x, bounds.x);
+          const y1 = Math.min(old.y, bounds.y);
+          const x2 = Math.max(old.x + old.w, bounds.x + bounds.w);
+          const y2 = Math.max(old.y + old.h, bounds.y + bounds.h);
+          boxes.set(rigKey, { x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+        } else {
+          boxes.set(rigKey, bounds);
+        }
+      }
+      captured++;
+      if (boxes.size > 100) {
+        const firstKey = boxes.keys().next().value;
+        boxes.delete(firstKey);
+        rigFrameSerial.delete(firstKey);
       }
     } catch (e) {
       skipped++;
@@ -351,13 +368,14 @@
     active = false;
     gl.drawElements = original.drawElements;
     gl.drawElementsInstanced = original.drawElementsInstanced;
+    cancelAnimationFrame(raf);
     overlay?.remove();
     boxes.clear();
     console.info("[GreenBoxCPU] stopped. Successful bounds:", captured,
       "skipped captures:", skipped);
   }
 
-  window[KEY] = { stop, stats: () => ({ active, captureIntervalMs: 180, perMeshIntervalMs: 1200, retainedBoxes: true, canvas: { width: gl.canvas.width, height: gl.canvas.height, id: gl.canvas.id, isModuleCanvas: gl.canvas === window.Module?.canvas }, drawCalls, programChecks, candidatePrograms, lastAttributes, captured, skipped, boxes: boxes.size }) };
+  window[KEY] = { stop, stats: () => ({ active, captureMode: "one capture per unique mesh per frame", groupedByBonePalette: true, canvas: { width: gl.canvas.width, height: gl.canvas.height, id: gl.canvas.id, isModuleCanvas: gl.canvas === window.Module?.canvas }, drawCalls, programChecks, candidatePrograms, lastAttributes, captured, skipped, boxes: boxes.size }) };
   renderOverlay();
   console.info("[GreenBoxCPU] running experimental CPU bounds. Stop with " +
     "window.__greenBoxCpuBounds.stop()");
