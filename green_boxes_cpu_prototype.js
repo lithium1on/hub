@@ -30,7 +30,9 @@
   const lastCapture = new Map();
   const boxes = new Map();
   const programIds = new WeakMap();
+  const objectIds = new WeakMap();
   let nextProgramId = 1;
+  let nextObjectId = 1;
   let active = true;
   let overlay = null;
   let raf = 0;
@@ -42,6 +44,12 @@
   let lastAttributes = [];
 
   const now = () => performance.now();
+  const objectId = obj => {
+    if (!obj) return 0;
+    let id = objectIds.get(obj);
+    if (!id) { id = nextObjectId++; objectIds.set(obj, id); }
+    return id;
+  };
   const enumName = v => "0x" + Number(v).toString(16);
 
   function readWholeBuffer(buffer) {
@@ -155,13 +163,32 @@
       canvas.width = gl.canvas.width;
       canvas.height = gl.canvas.height;
     }
+    const time = now();
+    for (const [key, item] of boxes) if (time - item.updatedAt > 1800) boxes.delete(key);
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.strokeStyle = "#20e060";
     ctx.lineWidth = Math.max(1.5, canvas.width / 900);
+    const merged = [];
     for (const item of boxes.values()) {
-      ctx.strokeRect(item.x, item.y, item.w, item.h);
+      let r = { x: item.x, y: item.y, right: item.x + item.w, bottom: item.y + item.h };
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (let i = merged.length - 1; i >= 0; i--) {
+          const m = merged[i], pad = 28;
+          if (r.x <= m.right + pad && r.right >= m.x - pad &&
+              r.y <= m.bottom + pad && r.bottom >= m.y - pad) {
+            r = { x: Math.min(r.x, m.x), y: Math.min(r.y, m.y),
+              right: Math.max(r.right, m.right), bottom: Math.max(r.bottom, m.bottom) };
+            merged.splice(i, 1);
+            changed = true;
+          }
+        }
+      }
+      merged.push(r);
     }
+    for (const r of merged) ctx.strokeRect(r.x, r.y, r.right - r.x, r.bottom - r.y);
     raf = requestAnimationFrame(render);
   }
 
@@ -276,20 +303,22 @@
     const indexBuffer = gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING);
     let programId = programIds.get(program);
     if (!programId) { programId = nextProgramId++; programIds.set(program, programId); }
-    const key = [programId, viewport.join(","), count, type, offset,
-      gl.getVertexAttribOffset(gl.getAttribLocation(program, "POSITION"),
-        gl.VERTEX_ATTRIB_ARRAY_POINTER)].join(":");
+    const posLoc = gl.getAttribLocation(program, "POSITION");
+    const boneLoc = gl.getAttribLocation(program, "TEXCOORD4");
+    const posBuffer = gl.getVertexAttrib(posLoc, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
+    const boneBuffer = gl.getVertexAttrib(boneLoc, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
+    const key = [programId, objectId(posBuffer), objectId(boneBuffer),
+      objectId(indexBuffer), viewport.join(","), count, type, offset,
+      gl.getVertexAttribOffset(posLoc, gl.VERTEX_ATTRIB_ARRAY_POINTER)].join(":");
     const t = now();
-    if (t - (lastCapture.get(key) || 0) < 120) return;
+    if (t - (lastCapture.get(key) || 0) < 500) return;
     lastCapture.set(key, t);
 
     try {
       const bounds = calculateBounds(program, count, type, offset, indexBuffer);
       if (bounds && bounds.w > 1 && bounds.h > 1) {
-        boxes.set(key, bounds);
+        boxes.set(key, { ...bounds, updatedAt: t });
         captured++;
-      } else {
-        boxes.delete(key);
       }
     } catch (e) {
       skipped++;
