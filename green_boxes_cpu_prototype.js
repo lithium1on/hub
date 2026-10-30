@@ -34,6 +34,10 @@
   let raf = 0;
   let captured = 0;
   let skipped = 0;
+  let drawCalls = 0;
+  let programChecks = 0;
+  let candidatePrograms = 0;
+  let lastAttributes = [];
 
   const now = () => performance.now();
   const enumName = v => "0x" + Number(v).toString(16);
@@ -104,13 +108,17 @@
   }
 
   function hasSkinningAttributes(program) {
+    programChecks++;
     const names = new Set();
     const n = gl.getProgramParameter(program, gl.ACTIVE_ATTRIBUTES);
     for (let i = 0; i < n; i++) {
       const a = gl.getActiveAttrib(program, i);
       if (a) names.add(a.name);
     }
-    return names.has("POSITION") && names.has("TEXCOORD4") && names.has("TEXCOORD5");
+    lastAttributes = Array.from(names);
+    const match = names.has("POSITION") && names.has("TEXCOORD4") && names.has("TEXCOORD5");
+    if (match) candidatePrograms++;
+    return match;
   }
 
   function getOverlay() {
@@ -251,6 +259,7 @@
 
   function onDraw(args, instanced) {
     if (!active) return;
+    drawCalls++;
     const program = gl.getParameter(gl.CURRENT_PROGRAM);
     if (!program || !hasSkinningAttributes(program)) return;
     if (instanced) { skipped++; return; }
@@ -301,7 +310,7 @@
       "skipped captures:", skipped);
   }
 
-  window[KEY] = { stop, stats: () => ({ active, captured, skipped, boxes: boxes.size }) };
+  window[KEY] = { stop, stats: () => ({ active, canvas: { width: gl.canvas.width, height: gl.canvas.height, id: gl.canvas.id, isModuleCanvas: gl.canvas === window.Module?.canvas }, drawCalls, programChecks, candidatePrograms, lastAttributes, captured, skipped, boxes: boxes.size }) };
   render();
   console.info("[GreenBoxCPU] running experimental CPU bounds. Stop with " +
     "window.__greenBoxCpuBounds.stop()");
