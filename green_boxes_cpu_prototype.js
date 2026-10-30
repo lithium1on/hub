@@ -30,9 +30,13 @@
   const boxes = new Map();
   const programIds = new WeakMap();
   const programSkinningCache = new WeakMap();
+  const programAttributeCache = new WeakMap();
+  const uniformBlockLayoutCache = new WeakMap();
+  const vertexVisitCache = new WeakMap();
   const objectIds = new WeakMap();
   let nextProgramId = 1;
   let nextObjectId = 1;
+  let visitToken = 0;
   let frameSerial = 0;
   let raf = 0;
   const seenThisFrame = new Set();
@@ -86,45 +90,60 @@
   }
 
   function getAttribute(program, wantedName) {
-    const n = gl.getProgramParameter(program, gl.ACTIVE_ATTRIBUTES);
-    for (let i = 0; i < n; i++) {
-      const info = gl.getActiveAttrib(program, i);
-      if (!info || info.name !== wantedName) continue;
-      const loc = gl.getAttribLocation(program, info.name);
-      const buffer = gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
-      return {
-        buffer,
-        bytes: readWholeBuffer(buffer),
-        size: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_SIZE),
-        type: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_TYPE),
-        stride: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_STRIDE),
-        offset: gl.getVertexAttribOffset(loc, gl.VERTEX_ATTRIB_ARRAY_POINTER),
-        normalized: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_NORMALIZED),
-        integer: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_INTEGER),
-        enabled: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_ENABLED)
-      };
+    let locations = programAttributeCache.get(program);
+    if (!locations) {
+      locations = new Map();
+      const n = gl.getProgramParameter(program, gl.ACTIVE_ATTRIBUTES);
+      for (let i = 0; i < n; i++) {
+        const info = gl.getActiveAttrib(program, i);
+        if (info) locations.set(info.name, gl.getAttribLocation(program, info.name));
+      }
+      programAttributeCache.set(program, locations);
     }
-    throw new Error("Missing attribute " + wantedName);
+    const loc = locations.get(wantedName);
+    if (loc === undefined || loc < 0) throw new Error("Missing attribute " + wantedName);
+    const buffer = gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
+    return {
+      buffer,
+      bytes: readWholeBuffer(buffer),
+      size: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_SIZE),
+      type: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_TYPE),
+      stride: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_STRIDE),
+      offset: gl.getVertexAttribOffset(loc, gl.VERTEX_ATTRIB_ARRAY_POINTER),
+      normalized: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_NORMALIZED),
+      integer: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_INTEGER),
+      enabled: gl.getVertexAttrib(loc, gl.VERTEX_ATTRIB_ARRAY_ENABLED)
+    };
   }
 
   function getBlock(program, wantedName) {
-    const n = gl.getProgramParameter(program, gl.ACTIVE_UNIFORM_BLOCKS);
-    for (let i = 0; i < n; i++) {
-      if (gl.getActiveUniformBlockName(program, i) !== wantedName) continue;
-      const binding = gl.getActiveUniformBlockParameter(program, i, gl.UNIFORM_BLOCK_BINDING);
-      const size = gl.getActiveUniformBlockParameter(program, i, gl.UNIFORM_BLOCK_DATA_SIZE);
-      const buffer = gl.getIndexedParameter(gl.UNIFORM_BUFFER_BINDING, binding);
-      const start = gl.getIndexedParameter(gl.UNIFORM_BUFFER_START, binding);
-      if (!buffer) throw new Error("No buffer bound for " + wantedName);
+    let layouts = uniformBlockLayoutCache.get(program);
+    if (!layouts) {
+      layouts = new Map();
+      const n = gl.getProgramParameter(program, gl.ACTIVE_UNIFORM_BLOCKS);
+      for (let i = 0; i < n; i++) {
+        const name = gl.getActiveUniformBlockName(program, i);
+        layouts.set(name, {
+          binding: gl.getActiveUniformBlockParameter(program, i, gl.UNIFORM_BLOCK_BINDING),
+          size: gl.getActiveUniformBlockParameter(program, i, gl.UNIFORM_BLOCK_DATA_SIZE)
+        });
+      }
+      uniformBlockLayoutCache.set(program, layouts);
+    }
+    const layout = layouts.get(wantedName);
+    if (!layout) throw new Error("Missing uniform block " + wantedName);
+    const binding = layout.binding;
+    const size = layout.size;
+    const buffer = gl.getIndexedParameter(gl.UNIFORM_BUFFER_BINDING, binding);
+    const start = gl.getIndexedParameter(gl.UNIFORM_BUFFER_START, binding);
+    if (!buffer) throw new Error("No buffer bound for " + wantedName);
       const cacheKey = objectId(buffer) + ":" + start + ":" + size;
       let bytes = uniformFrameCache.get(cacheKey);
       if (!bytes) {
         bytes = readRange(buffer, start, size);
         uniformFrameCache.set(cacheKey, bytes);
       }
-      return { bytes, size, start, buffer };
-    }
-    throw new Error("Missing uniform block " + wantedName);
+    return { bytes, size, start, buffer };
   }
 
   function hasSkinningAttributes(program) {
@@ -233,12 +252,23 @@
     const viewport = gl.getParameter(gl.VIEWPORT);
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     let visible = 0;
-    const visited = new Uint8Array(Math.ceil(pos.bytes.length / (pos.stride || 12)));
+    const vertexSlots = Math.ceil(pos.bytes.length / (pos.stride || 12));
+    let visited = vertexVisitCache.get(pos.buffer);
+    if (!visited || visited.length < vertexSlots) {
+      visited = new Uint32Array(vertexSlots);
+      vertexVisitCache.set(pos.buffer, visited);
+    }
+    visitToken = (visitToken + 1) >>> 0;
+    if (visitToken === 0) {
+      visited.fill(0);
+      visitToken = 1;
+    }
+    const thisVisit = visitToken;
 
     for (let i = 0; i < indices.length; i++) {
       const vi = indices[i];
-      if (vi >= visited.length || visited[vi]) continue;
-      visited[vi] = 1;
+      if (vi >= visited.length || visited[vi] === thisVisit) continue;
+      visited[vi] = thisVisit;
       const po = pos.offset + vi * (pos.stride || 12);
       const bo = boneIds.offset + vi * (boneIds.stride || 4);
       const wo = boneWeights.offset + vi * (boneWeights.stride || 4);
