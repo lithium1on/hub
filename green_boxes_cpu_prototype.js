@@ -187,7 +187,7 @@
 
   function animationTick() {
     if (!active) return;
-    animationTick();
+    renderOverlay();
     frameSerial++;
     seenThisFrame.clear();
     uniformFrameCache.clear();
@@ -376,7 +376,7 @@
   }
 
   window[KEY] = { stop, stats: () => ({ active, captureMode: "one capture per unique mesh per frame", groupedByBonePalette: true, canvas: { width: gl.canvas.width, height: gl.canvas.height, id: gl.canvas.id, isModuleCanvas: gl.canvas === window.Module?.canvas }, drawCalls, programChecks, candidatePrograms, lastAttributes, captured, skipped, boxes: boxes.size }) };
-  renderOverlay();
+  animationTick();
   console.info("[GreenBoxCPU] running experimental CPU bounds. Stop with " +
     "window.__greenBoxCpuBounds.stop()");
 })();
