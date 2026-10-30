@@ -30,12 +30,13 @@
   const lastCapture = new Map();
   const boxes = new Map();
   const programIds = new WeakMap();
+  const programSkinningCache = new WeakMap();
   const objectIds = new WeakMap();
   let nextProgramId = 1;
   let nextObjectId = 1;
+  let lastGlobalCapture = 0;
   let active = true;
   let overlay = null;
-  let raf = 0;
   let captured = 0;
   let skipped = 0;
   let drawCalls = 0;
@@ -118,6 +119,8 @@
   }
 
   function hasSkinningAttributes(program) {
+    const cached = programSkinningCache.get(program);
+    if (cached) return cached.match;
     programChecks++;
     const names = new Set();
     const n = gl.getProgramParameter(program, gl.ACTIVE_ATTRIBUTES);
@@ -127,6 +130,7 @@
     }
     lastAttributes = Array.from(names);
     const match = names.has("POSITION") && names.has("TEXCOORD4") && names.has("TEXCOORD5");
+    programSkinningCache.set(program, { match });
     if (match) candidatePrograms++;
     return match;
   }
@@ -151,7 +155,7 @@
     return overlay;
   }
 
-  function render() {
+  function renderOverlay() {
     if (!active) return;
     const canvas = getOverlay();
     const rect = gl.canvas.getBoundingClientRect();
@@ -163,12 +167,12 @@
       canvas.width = gl.canvas.width;
       canvas.height = gl.canvas.height;
     }
-    const time = now();
-    for (const [key, item] of boxes) if (time - item.updatedAt > 1800) boxes.delete(key);
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.strokeStyle = "#20e060";
     ctx.lineWidth = Math.max(1.5, canvas.width / 900);
+
+    // Merge only when new bounds arrive, never once per animation frame.
     const merged = [];
     for (const item of boxes.values()) {
       let r = { x: item.x, y: item.y, right: item.x + item.w, bottom: item.y + item.h };
@@ -188,8 +192,9 @@
       }
       merged.push(r);
     }
-    for (const r of merged) ctx.strokeRect(r.x, r.y, r.right - r.x, r.bottom - r.y);
-    raf = requestAnimationFrame(render);
+    for (const r of merged) {
+      ctx.strokeRect(r.x, r.y, r.right - r.x, r.bottom - r.y);
+    }
   }
 
   function calculateBounds(program, count, type, indexOffset, indexBuffer) {
@@ -311,14 +316,18 @@
       objectId(indexBuffer), viewport.join(","), count, type, offset,
       gl.getVertexAttribOffset(posLoc, gl.VERTEX_ATTRIB_ARRAY_POINTER)].join(":");
     const t = now();
-    if (t - (lastCapture.get(key) || 0) < 500) return;
+    if (t - lastGlobalCapture < 180) return;
+    if (t - (lastCapture.get(key) || 0) < 1200) return;
+    lastGlobalCapture = t;
     lastCapture.set(key, t);
 
     try {
       const bounds = calculateBounds(program, count, type, offset, indexBuffer);
       if (bounds && bounds.w > 1 && bounds.h > 1) {
-        boxes.set(key, { ...bounds, updatedAt: t });
+        boxes.set(key, bounds);
+        if (boxes.size > 160) boxes.delete(boxes.keys().next().value);
         captured++;
+        renderOverlay();
       }
     } catch (e) {
       skipped++;
@@ -342,15 +351,14 @@
     active = false;
     gl.drawElements = original.drawElements;
     gl.drawElementsInstanced = original.drawElementsInstanced;
-    cancelAnimationFrame(raf);
     overlay?.remove();
     boxes.clear();
     console.info("[GreenBoxCPU] stopped. Successful bounds:", captured,
       "skipped captures:", skipped);
   }
 
-  window[KEY] = { stop, stats: () => ({ active, canvas: { width: gl.canvas.width, height: gl.canvas.height, id: gl.canvas.id, isModuleCanvas: gl.canvas === window.Module?.canvas }, drawCalls, programChecks, candidatePrograms, lastAttributes, captured, skipped, boxes: boxes.size }) };
-  render();
+  window[KEY] = { stop, stats: () => ({ active, captureIntervalMs: 180, perMeshIntervalMs: 1200, retainedBoxes: true, canvas: { width: gl.canvas.width, height: gl.canvas.height, id: gl.canvas.id, isModuleCanvas: gl.canvas === window.Module?.canvas }, drawCalls, programChecks, candidatePrograms, lastAttributes, captured, skipped, boxes: boxes.size }) };
+  renderOverlay();
   console.info("[GreenBoxCPU] running experimental CPU bounds. Stop with " +
     "window.__greenBoxCpuBounds.stop()");
 })();
