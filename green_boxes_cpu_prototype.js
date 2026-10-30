@@ -2,7 +2,8 @@
  * Experimental CPU skinned-mesh bounds for Roblox WebGL2.
  *
  * Uses read-only GPU buffer readback + the skinning math observed in the
- * captured vertex shader. It never replays a game draw, starts transform
+ * captured vertex shader. Camera projection uses row-vector multiplication
+ * because the shader expression is skinnedPosition * mat4(...). It never replays a game draw, starts transform
  * feedback, changes shaders, or changes vertex/index/UBO bindings.
  *
  * Intended for debugging your own Roblox WebClient experiences. Readbacks can
@@ -28,7 +29,8 @@
   const bufferCache = new WeakMap();
   const lastCapture = new Map();
   const boxes = new Map();
-  const hookedPrograms = new WeakSet();
+  const programIds = new WeakMap();
+  let nextProgramId = 1;
   let active = true;
   let overlay = null;
   let raf = 0;
@@ -239,10 +241,12 @@
       }
 
       // GLSL mat4(CB0[0], CB0[1], CB0[2], CB0[3]) uses four column vectors.
-      const cx = cam[0] * sx + cam[4] * sy + cam[8] * sz + cam[12];
-      const cy = cam[1] * sx + cam[5] * sy + cam[9] * sz + cam[13];
-      const cz = cam[2] * sx + cam[6] * sy + cam[10] * sz + cam[14];
-      const cw = cam[3] * sx + cam[7] * sy + cam[11] * sz + cam[15];
+      // The captured shader multiplies on the LEFT: skinnedPosition * mat4(...).
+      // With CB0 vectors used as matrix columns, this is row-vector multiplication.
+      const cx = sx * cam[0] + sy * cam[1] + sz * cam[2] + cam[3];
+      const cy = sx * cam[4] + sy * cam[5] + sz * cam[6] + cam[7];
+      const cz = sx * cam[8] + sy * cam[9] + sz * cam[10] + cam[11];
+      const cw = sx * cam[12] + sy * cam[13] + sz * cam[14] + cam[15];
       if (!(cw > 0) || !Number.isFinite(cw)) continue;
       const nx = cx / cw, ny = cy / cw;
       if (!Number.isFinite(nx) || !Number.isFinite(ny)) continue;
@@ -265,8 +269,14 @@
     if (instanced) { skipped++; return; }
 
     const count = args[1], type = args[2], offset = args[3];
+    const viewport = Array.from(gl.getParameter(gl.VIEWPORT));
+    // Ignore shadow/offscreen passes: only capture the viewport matching the visible canvas.
+    if (viewport[0] !== 0 || viewport[1] !== 0 ||
+        viewport[2] !== gl.drawingBufferWidth || viewport[3] !== gl.drawingBufferHeight) return;
     const indexBuffer = gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING);
-    const key = [count, type, offset,
+    let programId = programIds.get(program);
+    if (!programId) { programId = nextProgramId++; programIds.set(program, programId); }
+    const key = [programId, viewport.join(","), count, type, offset,
       gl.getVertexAttribOffset(gl.getAttribLocation(program, "POSITION"),
         gl.VERTEX_ATTRIB_ARRAY_POINTER)].join(":");
     const t = now();
